@@ -13,8 +13,10 @@ python skills/time-trend/scripts/trend.py --metric <metric> [--freq month|week|d
 python skills/time-trend/scripts/trend.py --metric <metric> --freq month --group-by <dim> [--top-groups 5] ...
 
 ## Reading the result
-- Single series: one row per period with change_vs_previous, change_vs_last_year (monthly only)
-  and trading_days. Few trading days means a partial period or a closure - say so before concluding.
+- Single series: one row per period with change_vs_last_year (monthly only), change_vs_previous and trading_days.
+- For "compared with last year" questions use change_vs_last_year. change_vs_previous is month-on-month and
+  mostly seasonal (e.g. March is always bigger than February) - do not report it as the trend.
+- Few trading days means a partial period or a closure - say so before concluding.
 - Grouped: one row per period, one column per group (the largest groups); values only.
   For year-over-year change by group use period-comparison.
 - At most 25 periods are shown; narrow the range or use a coarser --freq.

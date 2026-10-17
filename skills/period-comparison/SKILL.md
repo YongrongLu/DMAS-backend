@@ -17,7 +17,9 @@ Periods: 2010-02:2010-04 means 1 Feb to 30 Apr 2010. A is the baseline, B the pe
 ## Reading the result
 - Total: rows for the metric and, when it has one, its volume and rate parts plus "effect of ..."
   rows whose deltas add up to the total change.
-- By group: period_a, period_b, delta, pct_change, share_of_change, cum_share and status.
+- By group: period_a, period_b, delta, own_change_pct (the group vs its own A value), share_of_total_change
+  (the group's part of the TOTAL change - use this for "X% of the decline"), cumulative share and status.
+  Example: UK own_change_pct -12.9% but share_of_total_change 92% means "the UK fell 12.9% and explains 92% of the decline".
   notes summarise how many groups stopped / are new / continued and their net effect - check these
   before blaming a change in the range. For per-SKU metrics like median_price, notes give the share
   of continuing groups that went up, down or stayed unchanged.

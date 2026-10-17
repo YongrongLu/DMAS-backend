@@ -14,9 +14,11 @@ For a business diagnosis use exactly these sections (markdown):
 ## Why
 - one bullet each for Sales, Customer and Product evidence, with their numbers
 ## Key Drivers
-- 2-3 drivers ranked by net effect, plus one line on causes ruled out
+- 2-3 drivers ranked by net effect, plus one line on causes ruled out. A driver says WHO or WHAT changed
+  behaviour (e.g. existing high-value customers ordering less often, a category selling fewer units);
+  "orders fell" or "revenue fell" is the symptom, not a driver
 ## Recommended Actions
-- 2-4 actions, each tied to the evidence above
+- 2-4 actions, each tied to the evidence above; skip markets or products worth under 2% of the decline
 ## Missing Information
 - departments that failed, evidence that is thin, and links that cannot be verified because departments
   never share records
@@ -30,6 +32,7 @@ Rules: use only facts from the department results; never invent numbers; no tool
 internal jargon; address the CEO directly. Keep it under 400 words, 1-3 bullets per section, and round
 numbers for a slide (£1.95M, £233k, -12%, 4.4 -> 3.4 orders per customer). A cause offset by an opposite
 effect (churn offset by new customers, stopped products offset by new lines) is not a key driver.
+Trends versus last year use year-over-year changes, never month-on-month ones.
 """
 
 

@@ -44,17 +44,18 @@ def _single_series(ctx, frame_all, period, metric, freq_key) -> tuple[list[str],
     counts = policy.entity_counts(frame_all, spec, [freq_key])
     small = set() if counts is None else set(counts[counts < spec.k_anon_min].index)
 
-    columns = ["period", metric, "change_vs_previous"] + (["change_vs_last_year"] if freq_key == "month" else []) + ["trading_days"]
+    columns = ["period", metric] + (["change_vs_last_year"] if freq_key == "month" else []) + ["change_vs_previous", "trading_days"]
     rows = []
     previous = None
     for key in sorted(table.index):
         value = table[key]
         if key in shown:
             hidden = key in small
-            row = [key, None if hidden else value, None if hidden or previous is None else output.pct(previous, value)]
+            row = [key, None if hidden else value]
             if freq_key == "month":
                 last = table.get(_last_year(key))
                 row.append(None if hidden else output.pct(last, value))
+            row.append(None if hidden or previous is None else output.pct(previous, value))
             row.append(int(days.get(key, 0)))
             rows.append([output.clean(v) for v in row])
         previous = value

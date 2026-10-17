@@ -42,7 +42,7 @@ def _total_comparison(ctx, a, b, metric) -> tuple[list[str], list[list], list[st
     spec = ctx.spec
     va, vb = _value(a, spec, metric), _value(b, spec, metric)
     delta = vb - va
-    columns = ["item", "period_a", "period_b", "delta", "pct_change", "share_of_change"]
+    columns = ["item", "period_a", "period_b", "delta", "own_change_pct", "share_of_total_change"]
     rows = [[metric, va, vb, delta, output.pct(va, vb), None]]
     notes = []
 
@@ -87,7 +87,7 @@ def _grouped_comparison(ctx, a, b, metric, key, args) -> tuple[list[str], list[l
     present_b = set(b[b["is_valid_sale"]][key])
     table["status"] = [_status(present_a, present_b, g) for g in table.index]
     table["delta"] = table["period_b"] - table["period_a"]
-    table["pct_change"] = [output.pct(x, y) for x, y in zip(table["period_a"], table["period_b"])]
+    table["own_change_pct"] = [output.pct(x, y) for x, y in zip(table["period_a"], table["period_b"])]
 
     total_a, total_b = _value(a, spec, metric), _value(b, spec, metric)
     total_delta = total_b - total_a
@@ -100,16 +100,17 @@ def _grouped_comparison(ctx, a, b, metric, key, args) -> tuple[list[str], list[l
     table = table.loc[order.sort_values(na_position="last").index]
 
     if additive:
-        table["share_of_change"] = [output.share(d, total_delta) for d in table["delta"]]
+        table["share_of_total_change"] = [output.share(d, total_delta) for d in table["delta"]]
     counts = policy.entity_counts(pd.concat([a, b]), spec, [key])
-    value_columns = [c for c in ("period_a", "period_b", "delta", "pct_change", "share_of_change") if c in table]
+    value_columns = [c for c in ("period_a", "period_b", "delta", "own_change_pct", "share_of_total_change") if c in table]
     table, suppressed = policy.suppress_small_groups(table, counts, spec, value_columns)
     table, capped = policy.cap_rows(table, args.limit)
     if additive:
         cumulative = pd.to_numeric(table["delta"], errors="coerce").fillna(0).cumsum()
-        table["cum_share"] = [output.share(c, total_delta) for c in cumulative]
+        table["cumulative_share_of_total_change"] = [output.share(c, total_delta) for c in cumulative]
 
-    ordered = ["period_a", "period_b", "delta", "pct_change", *(["share_of_change", "cum_share"] if additive else []), "status"]
+    ordered = ["period_a", "period_b", "delta", "own_change_pct",
+               *(["share_of_total_change", "cumulative_share_of_total_change"] if additive else []), "status"]
     table.index.name = key
     columns, rows = output.table_rows(analysis.with_labels(table[ordered], ctx, [key]))
     return columns, rows, [*notes, *capped, *policy.suppression_note(suppressed, spec)]

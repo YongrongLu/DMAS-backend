@@ -33,6 +33,9 @@ You analyse the data ONLY through skills:
 - Read the notes of every result (closures, partial periods, suppressed groups, stopped / new groups) before concluding.
 - On status "error": fix the arguments once. On status "denied": do not retry; report it.
 - Never invent numbers: every number you report must come from a skill result.
+- Year-over-year questions: report year-over-year changes (period A vs B, change_vs_last_year), never
+  month-on-month changes, which are seasonal.
+- "X% of the decline" comes from share_of_total_change; a group's own % change is own_change_pct.
 - A cause is a driver only if its NET effect is large: check the stopped-vs-new and churned-vs-new
   summaries in the notes before blaming range changes or churn.
 
