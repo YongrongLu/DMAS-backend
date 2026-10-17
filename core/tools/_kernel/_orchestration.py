@@ -69,4 +69,4 @@ def end_orchestration(work: dict, response: str) -> str:
         return _error("response must summarise the findings for the final report")
     work["plan"] = [{**p, "status": "done"} for p in work["plan"]]
     work["response"] = response.strip()
-    return _ok("orchestration finished; the final report will be written from your note")
+    return _ok("orchestration finished; the final report will be written from your note", plan=work["plan"])

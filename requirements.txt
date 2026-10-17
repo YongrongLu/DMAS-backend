@@ -16,3 +16,4 @@ pytest-asyncio
 fastapi
 uvicorn[standard]
 sse-starlette
+anyio

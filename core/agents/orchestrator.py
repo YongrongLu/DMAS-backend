@@ -15,8 +15,11 @@ Key constraints:
   only, not from the orchestrator's raw history
 """
 
+import json
+
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
+from langchain_core.runnables.config import get_async_callback_manager_for_config
 
 from core.agents.model import chat_model, invoke
 from core.agents.state import OrchestrationState
@@ -99,7 +102,20 @@ def make_tools_node():
         messages = []
         for call in state["messages"][-1].tool_calls:
             if call["name"] in CONTROL_TOOL_NAMES:
-                content = run_control_tool(call["name"], call["args"], work, online)
+                manager = get_async_callback_manager_for_config(config)
+                tool_run = await manager.on_tool_start(
+                    {"name": call["name"]}, json.dumps(call["args"], ensure_ascii=False),
+                    inputs=call["args"], tool_call_id=call["id"],
+                )
+                try:
+                    content = run_control_tool(call["name"], call["args"], work, online)
+                except Exception as exc:
+                    await tool_run.on_tool_error(exc)
+                    raise
+                if json.loads(content).get("status") == "error":
+                    await tool_run.on_tool_error(ValueError(content))
+                else:
+                    await tool_run.on_tool_end(content)
                 _show_tool_result(call["name"], work, content)
                 if '"status": "error"' in content:
                     await emit(config, "tool_rejected", {"tool": call["name"], "message": content[:300]})
@@ -108,6 +124,7 @@ def make_tools_node():
                 elif call["name"] == "fanout_subagents":
                     await emit(config, "fanout", {"round": work["round"], "tasks": work["round_tasks"]})
                 else:
+                    await emit(config, "plan", {"plan": work["plan"]})
                     await emit(config, "handoff", {"response": work["response"]})
             elif call["name"] in FILE_TOOLS_BY_NAME:
                 content = str(await FILE_TOOLS_BY_NAME[call["name"]].ainvoke(call["args"], config=config))
