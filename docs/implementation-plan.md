@@ -66,6 +66,8 @@
 
 ## 3. 从验证项目复用什么
 
+> 实际做法：验证项目只作参考，代码都按本项目需求重写，没有直接复制文件。下表记录的是参考了哪部分设计。
+
 目录名沿用本仓库已经建好的骨架（`core/middlewares`、`core/agents/worker`），不用验证项目里的 `middleware` / `workers`。
 
 | 验证项目 | 本项目 | 处理方式 |
@@ -264,6 +266,20 @@ if __name__ == "__main__":
 - "是否正在失去重要客户""高价值客户是否减少购买"：`customer-retention`、`period-comparison`（按 segment 分组）
 - "哪些商品退货率较高"：`aggregate-query`（按 return_rate 排序）
 
+### 5.4.1 Demo 故事对 Skills 的要求
+
+[demo-script.md](demo-script.md) 里的结论要能由 Agent 现场分析出来，所以 Skills 必须支持下面这些（都是通用能力，不针对这份数据写死）：
+
+| Skill | 要求 | 对应故事里的哪一步 |
+|---|---|---|
+| `period-comparison` | 分组比较时，每组标出状态：`stopped`（只在 A 有）、`new`（只在 B 有）、`continuing`（两期都有）；notes 里汇总三类各有多少组、合计多少，以及净变化；支持 `--status` 只看某一类 | Product：商品组合净增 £155k，排除组合原因；Lighting 有缺口 |
+| `period-comparison` | 对非加和类指标（如 `median_price`，每个 SKU 的单价中位数）分组比较时，notes 里汇总 continuing 组中上升、下降、不变的占比 | Product：65% 的商品价格不变，排除价格原因 |
+| `period-comparison` | 不分组比较 revenue 时，把变化拆成"订单数的影响"和"AOV 的影响" | Sales：问题在量，不在价 |
+| `customer-retention` | 按 segment 或 country 分组，输出每期的活跃人数、留存/流失/新增、营收，以及**人均订单数** | Customer：高价值客户人均订单 4.4 → 3.4；第二轮里按国家拆分 |
+| `time-trend` | 支持按任意维度分组（如 category、segment），按月输出时附带同比列 | Customer 第二轮：逐月恶化；Product：分品类趋势 |
+| 指标 | Product 要有 `units_per_line`（件数 / 行数），以及只统计 continuing 商品的办法（`period-comparison --status continuing`） | Product 第二轮：行数少了，每行件数也略少 |
+
+
 ### 5.5 `shell_executor` 规则
 
 `shell_executor` 是一个**受限执行器**：命令写法和 shell 一样，可以直接照抄 SKILL.md 里的用法行，但只能运行 Skill 脚本。
@@ -311,8 +327,10 @@ DepartmentSpec 的草图：
 @dataclass(frozen=True)
 class Metric:
     name: str
-    kind: Literal["sum", "nunique", "ratio"]
+    kind: Literal["sum", "nunique", "count", "median", "ratio"]
     column: str | None = None          # sum / nunique 用
+    rows: Literal["valid", "returns"] = "valid"   # 在哪些行上算：有效销售 / 退货
+    negate: bool = False               # 退货行的数量是负数，退货件数要取反
     numerator: str | None = None       # ratio：分子的指标名
     denominator: str | None = None     # ratio：分母的指标名
     description: str = ""
@@ -425,10 +443,10 @@ Orchestrator **自己不拒绝**数据请求，而是一律转给数据所属的
 | 部门 | 应该发现的事 |
 |---|---|
 | Sales | 营收同比 −12.0%，而且越到后面降得越多（2 月 −5.6%，3 月 −9.4%，4 月 −20.3%）；订单 −11.8%，AOV 基本不变；英国 −12.9%，其他国家 −6.4% |
-| Customer | 881 个老客户的订单 −16%、营收 −20%，流失和新增基本抵消；high_value 客户大多还在（353 → 342），但订单 −24.5% |
-| Product | 下降主要在 Home Decor（−25.7%）和 Lighting & Candles（−36.9%）；去年营收前 200 的 SKU 里有 18 个今年没有卖出，它们去年的营收相当于降幅的 37%；下降分布很散，降幅最大的 50 个 SKU 只占 23%；退货率从 7.9% 降到 6.5%，排除退货是原因 |
+| Customer | 881 个老客户的订单 −16%、营收 −20%，流失和新增基本抵消；high_value 客户大多还在（353 → 342），但订单 −24.5%，人均订单 4.40 → 3.42 |
+| Product | 下降主要在 Home Decor（−25.7%）和 Lighting & Candles（−36.9%）；**商品组合是净增的**：停卖 955 个 SKU（去年 £293k），新上 640 个 SKU（今年 £448k）；两年都在卖的 SKU 营收 −23.5%，其中 65% 价格没变；只有 Lighting 的组合净减少 £33k（停卖的灯串没有替代品）；退货率从 7.9% 降到 6.5%，排除退货是原因 |
 
-这些数字只用来核对 Agent 的答案，**不能写进任何 prompt**（PRD §7 要求结论不能硬编码）。
+这些数字只用来核对 Agent 的答案，**不能写进任何 prompt**（PRD §7 要求结论不能硬编码）。完整的问法、两轮拆解和预期报告见 [demo-script.md](demo-script.md)。
 
 ### 7.5 已知的坑
 

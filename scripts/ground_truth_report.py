@@ -25,7 +25,6 @@ DEVICES_DIR = os.path.join(PROJECT_ROOT, "data", "devices")
 
 DEFAULT_PERIOD_A = "2010-02-01:2010-04-30"
 DEFAULT_PERIOD_B = "2011-02-01:2011-04-30"
-TOP_SKUS_LAST_YEAR = 200
 
 
 def _load(department: str) -> pd.DataFrame:
@@ -107,15 +106,30 @@ def customer_section(a, b) -> None:
         members = segment[segment == tier].index
         in_a = A[A["customer_id"].isin(members)]
         in_b = B[B["customer_id"].isin(members)]
-        print(f"  {tier:<10} ({len(members)}): active {in_a['customer_id'].nunique()} -> {in_b['customer_id'].nunique()}, "
-              f"orders {in_a['invoice_id'].nunique()} -> {in_b['invoice_id'].nunique()} "
-              f"({_pct(in_a['invoice_id'].nunique(), in_b['invoice_id'].nunique())}), "
+        act_a, act_b = in_a["customer_id"].nunique(), in_b["customer_id"].nunique()
+        o_a, o_b = in_a["invoice_id"].nunique(), in_b["invoice_id"].nunique()
+        print(f"  {tier:<10} ({len(members)}): active {act_a} -> {act_b}, orders {o_a} -> {o_b} ({_pct(o_a, o_b)}), "
+              f"orders per active customer {o_a / act_a:.2f} -> {o_b / act_b:.2f}, "
               f"revenue {in_a['line_amount'].sum():,.0f} -> {in_b['line_amount'].sum():,.0f} "
               f"({_pct(in_a['line_amount'].sum(), in_b['line_amount'].sum())})")
 
+    # 第二轮追问的答案：高价值客户的放缓是不是英国特有、是不是逐月恶化
+    high = segment[segment == "high_value"].index
+    hv_a, hv_b = A[A["customer_id"].isin(high)], B[B["customer_id"].isin(high)]
+    for label, is_uk in (("UK", True), ("non-UK", False)):
+        o_a = hv_a[(hv_a["country"] == "United Kingdom") == is_uk]["invoice_id"].nunique()
+        o_b = hv_b[(hv_b["country"] == "United Kingdom") == is_uk]["invoice_id"].nunique()
+        print(f"  high_value {label}: orders {o_a} -> {o_b} ({_pct(o_a, o_b)})")
+    by_month = [
+        _pct(hv_a[hv_a["invoice_date"].dt.month == m]["invoice_id"].nunique(),
+             hv_b[hv_b["invoice_date"].dt.month == m]["invoice_id"].nunique())
+        for m in sorted(hv_b["invoice_date"].dt.month.unique())
+    ]
+    print(f"  high_value orders by month: {', '.join(by_month)}")
+
 
 def product_section(a, b) -> None:
-    """Which products and categories drive the decline, and whether returns explain it."""
+    """Whether range, price or volume drives the decline, which categories, and returns."""
     df = _load("product")
     valid = df[df["is_valid_sale"]]
     A, B = _window(valid, a), _window(valid, b)
@@ -129,19 +143,37 @@ def product_section(a, b) -> None:
         print(f"  {category:<24} {row['A']:,.0f} -> {row['B']:,.0f} ({_pct(row['A'], row['B'])}), "
               f"share of the decline {row['delta'] / total_delta:.0%}")
 
+    # 商品组合：停卖的（只在 A 有）、新上的（只在 B 有）、两年都在卖的
     sku_a = A.groupby("stock_code")["line_amount"].sum()
     sku_b = B.groupby("stock_code")["line_amount"].sum()
-    top_last_year = sku_a.sort_values(ascending=False).head(TOP_SKUS_LAST_YEAR)
-    gone = top_last_year[~top_last_year.index.isin(sku_b.index)]
-    names = df.drop_duplicates("stock_code").set_index("stock_code")["description"]
-    print(f"top-{TOP_SKUS_LAST_YEAR} SKUs of A with zero sales in B: {len(gone)}, their revenue in A "
-          f"{gone.sum():,.0f} = {-gone.sum() / total_delta:.0%} of the decline")
-    print("  e.g. " + "; ".join(names[code] for code in gone.head(5).index))
+    stopped = sku_a[~sku_a.index.isin(sku_b.index)]
+    new = sku_b[~sku_b.index.isin(sku_a.index)]
+    continuing = sku_a.index.intersection(sku_b.index)
+    print(f"range: stopped {len(stopped)} SKUs (A {stopped.sum():,.0f}), new {len(new)} SKUs (B {new.sum():,.0f}), "
+          f"net {new.sum() - stopped.sum():+,.0f}")
+    print(f"continuing {len(continuing)} SKUs: revenue {sku_a[continuing].sum():,.0f} -> {sku_b[continuing].sum():,.0f} "
+          f"({_pct(sku_a[continuing].sum(), sku_b[continuing].sum())})")
 
-    delta = sku_b.reindex(sku_a.index.union(sku_b.index)).fillna(0) - sku_a.reindex(sku_a.index.union(sku_b.index)).fillna(0)
-    drops = delta[delta < 0].sort_values()
-    print(f"concentration: top 10 falling SKUs = {drops.head(10).sum() / drops.sum():.0%}, "
-          f"top 50 = {drops.head(50).sum() / drops.sum():.0%} of the gross SKU decline")
+    cont_a, cont_b = A[A["stock_code"].isin(continuing)], B[B["stock_code"].isin(continuing)]
+    print(f"  units {cont_a['quantity'].sum():,} -> {cont_b['quantity'].sum():,} "
+          f"({_pct(cont_a['quantity'].sum(), cont_b['quantity'].sum())}), "
+          f"units per order line {cont_a['quantity'].mean():.1f} -> {cont_b['quantity'].mean():.1f}")
+    price_a = cont_a.groupby("stock_code")["unit_price"].median()
+    price_b = cont_b.groupby("stock_code")["unit_price"].median()
+    change = price_b / price_a - 1
+    same = change.abs() <= 0.001
+    print(f"  median unit price per SKU: unchanged {same.mean():.0%}, higher {(change > 0.001).mean():.0%}, "
+          f"lower {(change < -0.001).mean():.0%}; unchanged-price SKUs units "
+          f"{_pct(cont_a[cont_a['stock_code'].isin(change[same].index)]['quantity'].sum(), cont_b[cont_b['stock_code'].isin(change[same].index)]['quantity'].sum())}")
+
+    category = df.drop_duplicates("stock_code").set_index("stock_code")["category"]
+    net_by_cat = (new.groupby(category.reindex(new.index)).sum()
+                  .sub(stopped.groupby(category.reindex(stopped.index)).sum(), fill_value=0).sort_values())
+    print("net range change by category (new - stopped): "
+          + ", ".join(f"{c} {v:+,.0f}" for c, v in net_by_cat.head(3).items()))
+    names = df.drop_duplicates("stock_code").set_index("stock_code")["description"]
+    lighting_stopped = stopped[category.reindex(stopped.index) == "Lighting & Candles"].sort_values(ascending=False)
+    print("  largest stopped lighting lines: " + "; ".join(names[c] for c in lighting_stopped.head(4).index))
 
     def return_rate(period):
         rows = _window(df, period)
