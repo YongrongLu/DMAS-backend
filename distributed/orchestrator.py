@@ -20,7 +20,7 @@ import os
 import time
 
 from core.agents.graph import build_graph, initial_state
-from core.departments import DEPARTMENTS
+from core.departments import DEVICES_DIR, load_card
 from distributed.hub import AgentHub
 from utils import console
 from utils.logging import setup_logging
@@ -44,6 +44,17 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _local_departments() -> dict[str, str]:
+    """Session name -> section title of the department folders on this machine, for the run log."""
+    titles = {}
+    for name in sorted(os.listdir(DEVICES_DIR)) if os.path.isdir(DEVICES_DIR) else []:
+        try:
+            titles[f"agent-{name}"] = load_card(os.path.join(DEVICES_DIR, name)).display_name
+        except (OSError, ValueError):
+            continue
+    return titles
+
+
 async def main() -> None:
     args = _parse_args()
     session = capture("orchestrator", "distributed.orchestrator")
@@ -65,7 +76,7 @@ async def main() -> None:
         await hub.stop()
         # 等部门 Agent 把最后几行写完，再把这次运行的所有终端输出拼成一个日志
         await asyncio.sleep(1)
-        path = write_run_log(session, {f"agent-{name}": spec.display_name for name, spec in DEPARTMENTS.items()})
+        path = write_run_log(session, _local_departments())
         console.say("orchestrator", f"log saved to {os.path.relpath(path, os.path.dirname(LOGS_DIR))}", "bold")
 
 

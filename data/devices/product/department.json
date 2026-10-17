@@ -1,0 +1,7 @@
+{
+  "name": "product",
+  "display_name": "Product Department",
+  "description": "Product-level sales lines: SKU, description, category, order date, quantity, unit price and amount, plus sale / return / cancellation flags. Answers which categories and products changed, whether the range or prices changed, and how returns developed.",
+  "record_label": "transaction-level",
+  "sensitive": [{"file": "product_data.csv", "column": "invoice_id"}]
+}

@@ -1,32 +1,36 @@
-"""macOS Seatbelt profile for skill runs
+"""macOS Seatbelt profile for an agent's bash commands
 
 Provides:
-- air_gapped_profile:   a profile for sandbox-exec: read anywhere, write only to a temp dir, no network
+- seatbelt_profile:     a profile for sandbox-exec built from an agent's AccessPolicy
 
 Key constraints:
-- reads stay global because the interpreter and site-packages live all over
-  the disk; privacy comes from the executor's allow-list and output gate,
-  the sandbox adds "no network" so a script can never send data anywhere
-- credentials and shell history under the home directory stay unreadable
+- no network: data can never be sent anywhere from a command
+- writes only to the agent's workspace and the temp directory
+- reads are global (interpreters and libraries live all over the disk)
+  except the protected project folders (data/, workspaces/, logs, .env) and
+  credentials in the home directory; the agent's own workspace and data
+  folder are re-allowed afterwards (the last matching rule wins)
 """
 
 import os
 
 
-def air_gapped_profile(writable_dir: str) -> str:
-    """Return the Seatbelt profile text.
+def _subpaths(paths) -> str:
+    return " ".join(f'(subpath "{p}")' for p in paths)
 
-    Args:
-        writable_dir:   the only directory (besides /dev/null) the run may write to.
-    """
+
+def seatbelt_profile(workspace: str, read_roots, protected, sensitive_home, writable_tmp: str) -> str:
+    """Return the Seatbelt profile text for one agent."""
     home = os.path.expanduser("~")
+    denied = [*protected, *(os.path.join(home, p) for p in sensitive_home)]
+    allowed = [workspace, *read_roots]
     return f"""(version 1)
 (deny default)
 (allow process-exec* process-fork sysctl-read mach-lookup file-map-executable)
 (allow signal (target self))
 (allow file-read*)
-(deny file-read* (subpath "{home}/.ssh") (subpath "{home}/Library/Keychains")
-      (literal "{home}/.zsh_history") (literal "{home}/.bash_history"))
-(allow file-write* (subpath "{os.path.realpath(writable_dir)}") (literal "/dev/null"))
+(deny file-read* {_subpaths(denied)})
+(allow file-read* {_subpaths(allowed)})
+(allow file-write* (subpath "{workspace}") (subpath "{os.path.realpath(writable_tmp)}") (literal "/dev/null"))
 (deny network*)
 """

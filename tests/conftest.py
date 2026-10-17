@@ -3,8 +3,6 @@
 Provided fixtures:
 - source:       a small synthetic cleaned-transactions frame with a known story
 - views:        the three department views built from it, department -> CSV path
-- context:      factory building a skill Context for one department
-- skill:        factory loading a skill script module by skill name
 
 The synthetic data (A = Feb-Apr 2010, B = Feb-Apr 2011):
 - 12 UK customers 20001-20012 buy every month in A; only 20001-20006 come back in B
@@ -21,10 +19,7 @@ import os
 import pandas as pd
 import pytest
 
-from core.data.cli import Context
-from core.data.loader import load_frame
-from core.departments import get_department
-from core.tools._kernel.constants import PROJECT_ROOT, SKILLS_DIR
+from core.tools._kernel.constants import PROJECT_ROOT
 
 
 SKUS = {
@@ -94,25 +89,3 @@ def views(source, tmp_path_factory) -> dict[str, str]:
     out_dir = tmp_path_factory.mktemp("devices")
     manifest = builder.write_views(builder.build_views(source), str(out_dir), {})
     return {dept: str(out_dir / info["path"]) for dept, info in manifest["views"].items()}
-
-
-@pytest.fixture()
-def context(views):
-    def make(department: str) -> Context:
-        spec = get_department(department)
-        return Context(spec=spec, df=load_frame(spec, views[department]), data_path=views[department])
-    return make
-
-
-@pytest.fixture(scope="session")
-def skill():
-    def load(name: str):
-        scripts = os.path.join(SKILLS_DIR, name, "scripts")
-        script = next(f for f in sorted(os.listdir(scripts)) if f.endswith(".py"))
-        return _load_module(os.path.join(scripts, script), f"skill_{name.replace('-', '_')}")
-    return load
-
-
-def run_skill(module, ctx: Context, argv: list[str]) -> dict:
-    """Parse argv with the skill's parser and call its run()."""
-    return module.run(ctx, module.build_parser().parse_args(argv))

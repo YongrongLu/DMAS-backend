@@ -3,8 +3,8 @@
 A skill is a folder under skills/ with a SKILL.md and a scripts/ folder:
 
     skills/time-trend/
-    ├── SKILL.md          frontmatter (name, description, departments) + instructions
-    └── scripts/trend.py
+    ├── SKILL.md          frontmatter (name, description, optional departments) + instructions
+    └── scripts/          optional helper scripts the instructions refer to
 
 Provides:
 - SkillInfo:            one parsed skill
@@ -26,7 +26,9 @@ import os
 from dataclasses import dataclass
 from functools import lru_cache
 
-from core.tools._kernel.constants import PROJECT_ROOT, SKILL_FILE, SKILL_SCRIPTS_DIR, SKILLS_DIR
+from core.tools._kernel.constants import PROJECT_ROOT, SKILL_FILE, SKILLS_DIR
+
+SKILL_SCRIPTS_DIR = "scripts"
 
 
 @dataclass(frozen=True)
@@ -84,9 +86,11 @@ def parse_skill(skill_dir: str, project_root: str = PROJECT_ROOT) -> SkillInfo:
     name = meta.get("name", "")
     if name != os.path.basename(skill_dir):
         raise ValueError(f"{path}: name {name!r} must equal the folder name")
-    departments = meta.get("departments", [])
-    if not isinstance(departments, list) or not departments or not meta.get("description"):
-        raise ValueError(f"{path}: description and a departments list are required")
+    departments = meta.get("departments", ["all"])
+    if not isinstance(departments, list):
+        departments = [departments]
+    if not meta.get("description"):
+        raise ValueError(f"{path}: description is required")
 
     scripts_dir = os.path.join(skill_dir, SKILL_SCRIPTS_DIR)
     scripts = tuple(
@@ -110,7 +114,8 @@ def discover_skills(skills_dir: str = SKILLS_DIR, project_root: str = PROJECT_RO
 
 def skills_for(department: str, skills_dir: str = SKILLS_DIR, project_root: str = PROJECT_ROOT) -> list[SkillInfo]:
     """The skills a department may use, sorted by name."""
-    return [s for s in discover_skills(skills_dir, project_root).values() if department in s.departments]
+    return [s for s in discover_skills(skills_dir, project_root).values()
+            if "all" in s.departments or department in s.departments]
 
 
 def render_skill_index(department: str, skills_dir: str = SKILLS_DIR) -> str:

@@ -25,6 +25,7 @@ from langgraph.types import Send
 
 from core.agents.orchestrator import get_hub, make_announce_node, make_orchestrator_node, make_tools_node
 from core.agents.state import OrchestrationState
+from core.agents.streaming import emit
 from utils import console
 
 
@@ -38,7 +39,9 @@ def initial_state(query: str) -> dict:
 
 async def department(task: dict, config: RunnableConfig) -> dict:
     """Run one task on the device of its department, through the hub."""
+    await emit(config, "department_started", {"task": task["task"]})
     result = await get_hub(config).dispatch(task["task"])
+    await emit(config, "department_result", {"result": result})
     icon = "✓" if result.get("status") == "success" else "✗"
     console.say("orchestrator", f"{icon} {result.get('department')} @ {result.get('device_id', '?')} "
                                 f"{result.get('status')} in {result.get('elapsed_seconds', 0)}s",

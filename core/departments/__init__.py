@@ -1,26 +1,95 @@
-"""Department registry
+"""Department cards -- what a department device holds, read from its data directory
+
+A department is a folder, not code:
+
+    data/devices/<name>/
+    ├── department.json     the card: name, display name, description, sensitive columns
+    ├── shared/             data the department's agent may read (any format)
+    └── private/            data that never reaches the agent (optional)
+
+department.json:
+
+    {
+      "name": "customer",
+      "display_name": "Customer Department",
+      "description": "what the data covers; sent to the orchestrator as the capability card",
+      "record_label": "customer-level",
+      "sensitive": [{"file": "customer_data.csv", "column": "customer_id"}]
+    }
 
 Provides:
-- DEPARTMENTS:          department name -> DepartmentSpec
-- get_department:       look a department up by name
+- DepartmentCard:       one department card plus its folder layout
+- load_card:            read the card of a department folder
+- DEVICES_DIR:          the default parent folder of the department folders
+
+Key constraints:
+- adding a department means adding a folder with a card; no code changes
+- "sensitive" lists identifier columns of tabular files in shared/; the
+  egress guard scans conclusions for their values before they leave the device
 """
 
-from core.departments.base import DepartmentSpec
-from core.departments.customer import CUSTOMER
-from core.departments.product import PRODUCT
-from core.departments.sales import SALES
+import json
+import os
+from dataclasses import dataclass, field
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DEVICES_DIR = os.path.join(PROJECT_ROOT, "data", "devices")
+CARD_FILE = "department.json"
 
 
-DEPARTMENTS: dict[str, DepartmentSpec] = {spec.name: spec for spec in (SALES, CUSTOMER, PRODUCT)}
+@dataclass(frozen=True)
+class DepartmentCard:
+    """One department.
+
+    Attributes:
+        name:           short id, used as the agent role and in fanout tasks.
+        display_name:   e.g. "Customer Department".
+        description:    what the department's data covers.
+        record_label:   what one raw record is, used in the denial message.
+        sensitive:      [{"file", "column"}] identifier columns that must never leave the device.
+        root:           the department folder.
+    """
+    name: str
+    display_name: str
+    description: str
+    root: str
+    record_label: str = "record-level"
+    sensitive: tuple[dict, ...] = field(default_factory=tuple)
+
+    @property
+    def shared_dir(self) -> str:
+        """The data the agent may read."""
+        return os.path.join(self.root, "shared")
+
+    @property
+    def private_dir(self) -> str:
+        """Data that never reaches the agent."""
+        return os.path.join(self.root, "private")
+
+    @property
+    def denial_message(self) -> str:
+        """The answer to a raw-data export request."""
+        return (f"Access denied. Raw {self.record_label} data cannot be exported from this device. "
+                f"I can provide aggregate {self.display_name.lower()} insights instead.")
 
 
-def get_department(name: str) -> DepartmentSpec:
-    """Return the DepartmentSpec of a department.
+def load_card(root: str) -> DepartmentCard:
+    """Read the department card of a department folder.
 
     Raises:
-        KeyError: when no department has that name; the message lists the valid names.
+        FileNotFoundError / ValueError: when the card is missing or incomplete.
     """
-    try:
-        return DEPARTMENTS[name]
-    except KeyError:
-        raise KeyError(f"unknown department {name!r}; expected one of {sorted(DEPARTMENTS)}") from None
+    path = os.path.join(root, CARD_FILE)
+    with open(path, encoding="utf-8") as f:
+        raw = json.load(f)
+    missing = [k for k in ("name", "display_name", "description") if not raw.get(k)]
+    if missing:
+        raise ValueError(f"{path} is missing {missing}")
+    return DepartmentCard(
+        name=raw["name"],
+        display_name=raw["display_name"],
+        description=raw["description"],
+        root=os.path.abspath(root),
+        record_label=raw.get("record_label", "record-level"),
+        sensitive=tuple(raw.get("sensitive", [])),
+    )

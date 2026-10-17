@@ -21,7 +21,6 @@ import uuid
 from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 
-from core.departments import DEPARTMENTS
 from distributed.constants import MAX_FRAME_BYTES, PING_INTERVAL_SECONDS, PING_TIMEOUT_SECONDS, REGISTER_TIMEOUT_SECONDS
 from distributed.protocol import REGISTER, REGISTER_ACK, RESULT, TASK, ProtocolError, decode, encode, failed_result
 from utils import console
@@ -60,6 +59,11 @@ class AgentHub:
     def online_departments(self) -> dict[str, str]:
         """department -> device_id of every online agent."""
         return {info["department"]: device for device, info in self._devices.items()}
+
+    def department_cards(self) -> dict[str, dict]:
+        """department -> {"device", "description"} of every online agent, for the orchestrator's prompt."""
+        return {info["department"]: {"device": device, "description": info["capability"]}
+                for device, info in self._devices.items()}
 
     async def wait_for_departments(self, count: int) -> None:
         """Block until `count` departments are online."""
@@ -119,8 +123,8 @@ class AgentHub:
             reason = f"first message must be {REGISTER}"
         elif not device_id or device_id in self._devices:
             reason = f"device id {device_id!r} is empty or already online"
-        elif department not in DEPARTMENTS:
-            reason = f"department must be one of {sorted(DEPARTMENTS)}"
+        elif not isinstance(department, str) or not department.strip():
+            reason = "department must be a non-empty name"
         elif department in self.online_departments():
             reason = f"the {department} department is already online on {self.online_departments()[department]}"
         if reason:

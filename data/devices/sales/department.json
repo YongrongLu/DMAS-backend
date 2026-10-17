@@ -1,0 +1,7 @@
+{
+  "name": "sales",
+  "display_name": "Sales Department",
+  "description": "Order-level sales lines with order date, market (country), quantity and amount, plus sale / return / cancellation flags. Answers how sales developed over time and across markets, and whether changes came from order volume or order value.",
+  "record_label": "transaction-level",
+  "sensitive": [{"file": "sales_data.csv", "column": "invoice_id"}]
+}

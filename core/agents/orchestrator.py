@@ -20,9 +20,12 @@ from langchain_core.runnables import RunnableConfig
 
 from core.agents.model import chat_model, invoke
 from core.agents.state import OrchestrationState
+from core.agents.streaming import emit
 from core.prompts.system_prompt_announce import ANNOUNCE_PROMPT, render_announce_input
-from core.prompts.system_prompt_orchestrator import render_orchestrator_prompt, render_snapshot
-from core.tools.bundles.orchestrator import FINAL_TOOL_SPECS, ORCHESTRATOR_TOOL_SPECS, run_orchestrator_tool
+from core.prompts.system_prompt_orchestrator import ORCHESTRATOR_PROMPT, render_snapshot
+from core.tools._kernel._access import orchestrator_policy
+from core.tools.bundles.files import build_file_tools
+from core.tools.bundles.orchestrator import CONTROL_TOOL_NAMES, CONTROL_TOOL_SPECS, END_TOOL_SPECS, run_control_tool
 from utils import console
 from utils.settings import settings
 
@@ -46,25 +49,29 @@ def _text(message: AIMessage) -> str:
     return "".join(part.get("text", "") for part in message.content if isinstance(part, dict))
 
 
+# orchestrator 自己的文件工具：只能操作 workspaces/orchestrator，看不到任何部门数据
+FILE_TOOLS = build_file_tools(orchestrator_policy(), with_bash=False)
+FILE_TOOLS_BY_NAME = {t.name: t for t in FILE_TOOLS}
+
+
 def make_orchestrator_node():
     """The orchestrator's LLM step."""
-    system_prompt = render_orchestrator_prompt()
 
     async def orchestrator(state: OrchestrationState, config: RunnableConfig) -> dict:
-        online = get_hub(config).online_departments()
+        departments = get_hub(config).department_cards()
         final_turn = state["iteration"] + 1 >= MAX_ITERATIONS
-        model = chat_model().bind_tools(FINAL_TOOL_SPECS if final_turn else ORCHESTRATOR_TOOL_SPECS)
-        snapshot = render_snapshot(state["plan"], state["iteration"], MAX_ITERATIONS, online)
-        messages = [SystemMessage(system_prompt), *state["messages"], HumanMessage(snapshot)]
+        model = chat_model().bind_tools(END_TOOL_SPECS if final_turn else [*CONTROL_TOOL_SPECS, *FILE_TOOLS])
+        snapshot = render_snapshot(state["plan"], state["iteration"], MAX_ITERATIONS, departments)
+        messages = [SystemMessage(ORCHESTRATOR_PROMPT), *state["messages"], HumanMessage(snapshot)]
 
-        response = await invoke(model, messages, role=TAG)
+        response = await invoke(model, messages, role=TAG, config=config)
         text = _text(response).strip()
         if text:
             console.say(TAG, console.preview(text, 300), "magenta")
 
         update = {"messages": [response], "iteration": state["iteration"] + 1}
         if not response.tool_calls:
-            update["response"] = text or "Summarise the department findings for the CEO."
+            update["response"] = text or "Summarise the department findings for the user."
         return update
 
     return orchestrator
@@ -91,9 +98,23 @@ def make_tools_node():
         work = {"plan": list(state["plan"]), "round_tasks": [], "round": state["round"], "response": ""}
         messages = []
         for call in state["messages"][-1].tool_calls:
-            content = run_orchestrator_tool(call["name"], call["args"], work, online)
+            if call["name"] in CONTROL_TOOL_NAMES:
+                content = run_control_tool(call["name"], call["args"], work, online)
+                _show_tool_result(call["name"], work, content)
+                if '"status": "error"' in content:
+                    await emit(config, "tool_rejected", {"tool": call["name"], "message": content[:300]})
+                elif call["name"] in ("make_plan", "edit_plan", "delete_plan"):
+                    await emit(config, "plan", {"plan": work["plan"]})
+                elif call["name"] == "fanout_subagents":
+                    await emit(config, "fanout", {"round": work["round"], "tasks": work["round_tasks"]})
+                else:
+                    await emit(config, "handoff", {"response": work["response"]})
+            elif call["name"] in FILE_TOOLS_BY_NAME:
+                content = str(await FILE_TOOLS_BY_NAME[call["name"]].ainvoke(call["args"], config=config))
+                console.say(TAG, f"{call['name']} → {console.preview(content, 120)}", "grey")
+            else:
+                content = f"Error: unknown tool {call['name']!r}"
             messages.append(ToolMessage(content=content, tool_call_id=call["id"], name=call["name"]))
-            _show_tool_result(call["name"], work, content)
         return {"messages": messages, **work}
 
     return orchestrator_tools
@@ -102,7 +123,7 @@ def make_tools_node():
 def make_announce_node():
     """Streams the final report."""
 
-    async def announce(state: OrchestrationState) -> dict:
+    async def announce(state: OrchestrationState, config: RunnableConfig) -> dict:
         results = list(state["results"].values())
         messages = [
             SystemMessage(ANNOUNCE_PROMPT),
@@ -110,7 +131,7 @@ def make_announce_node():
         ]
         print("\n" + "═" * 72 + "\nFINAL REPORT\n" + "═" * 72, flush=True)
         report = ""
-        async for chunk in chat_model(thinking=settings.llm_report_thinking).astream(messages):
+        async for chunk in chat_model(thinking=settings.llm_report_thinking).astream(messages, config=config):
             piece = chunk.content if isinstance(chunk.content, str) else ""
             report += piece
             print(piece, end="", flush=True)
@@ -119,6 +140,7 @@ def make_announce_node():
             report = state["response"]
             print("(the report writer returned nothing; showing the coordinator's summary)\n" + report, flush=True)
         print("\n" + "═" * 72, flush=True)
+        await emit(config, "report", {"text": report})
         return {"report": report}
 
     return announce

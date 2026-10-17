@@ -6,7 +6,7 @@ tool definitions of this project:
 1. models:          the endpoint answers and serves LLM_MODEL
 2. chat:            a plain reply comes back, without leaked <think> text
 3. orchestrator:    the model calls fanout_subagents with arguments our tool runner accepts
-4. department:      the model calls shell_executor with a skill command, and the skill runs
+4. department:      the model calls bash with a command, and it runs in the sandboxed workspace
 
 Usage:
     ./.venv/bin/python scripts/check_model.py
@@ -24,16 +24,15 @@ from langchain_core.messages import HumanMessage, SystemMessage  # noqa: E402
 from openai import OpenAI  # noqa: E402
 
 from core.agents.model import chat_model  # noqa: E402
-from core.departments import get_department  # noqa: E402
+from core.departments import DEVICES_DIR, load_card  # noqa: E402
 from core.prompts.system_prompt_department import render_department_prompt  # noqa: E402
-from core.prompts.system_prompt_orchestrator import render_orchestrator_prompt, render_snapshot  # noqa: E402
-from core.tools._kernel.constants import PROJECT_ROOT  # noqa: E402
-from core.tools.bundles.department import build_department_tools  # noqa: E402
-from core.tools.bundles.orchestrator import ORCHESTRATOR_TOOL_SPECS, run_orchestrator_tool  # noqa: E402
+from core.prompts.system_prompt_orchestrator import ORCHESTRATOR_PROMPT, render_snapshot  # noqa: E402
+from core.tools._kernel._access import department_policy  # noqa: E402
+from core.tools.bundles.files import build_file_tools  # noqa: E402
+from core.tools.bundles.orchestrator import CONTROL_TOOL_SPECS, run_control_tool  # noqa: E402
 from utils.settings import settings  # noqa: E402
 
-COMMAND = ("python skills/period-comparison/scripts/compare.py --metric revenue "
-           "--period-a 2010-02:2010-04 --period-b 2011-02:2011-04")
+COMMAND = "python -c 'print(6 * 7)'"
 
 
 def report(name: str, ok: bool, detail: str, t_start: float) -> bool:
@@ -62,36 +61,38 @@ async def check_chat() -> bool:
 
 async def check_orchestrator() -> bool:
     t = time.time()
-    online = {"sales": "pc-sales", "customer": "pc-customer", "product": "pc-product"}
+    online = {"sales": "pc-sales", "customer": "pc-customer"}
+    cards = {name: {"device": device, "description": f"{name} data"} for name, device in online.items()}
     messages = [
-        SystemMessage(render_orchestrator_prompt()),
-        HumanMessage("Ask the sales department how revenue and orders changed between Feb-Apr 2010 and "
-                     "Feb-Apr 2011. Skip the plan and call fanout_subagents now."),
-        HumanMessage(render_snapshot([], 0, 14, online)),
+        SystemMessage(ORCHESTRATOR_PROMPT),
+        HumanMessage("Ask the sales department how its total sales changed between last quarter and the "
+                     "same quarter a year earlier. Skip the plan and call fanout_subagents now."),
+        HumanMessage(render_snapshot([], 0, 14, cards)),
     ]
-    reply = await chat_model().bind_tools(ORCHESTRATOR_TOOL_SPECS).ainvoke(messages)
+    reply = await chat_model().bind_tools(CONTROL_TOOL_SPECS).ainvoke(messages)
     calls = [c for c in reply.tool_calls if c["name"] == "fanout_subagents"]
     if not calls:
         return report("orchestrator", False, f"no fanout_subagents call (tool calls: {[c['name'] for c in reply.tool_calls]}, "
                       f"text: {str(reply.content)[:120]!r}); check --enable-auto-tool-choice and --tool-call-parser", t)
     work = {"plan": [], "round_tasks": [], "round": 0, "response": ""}
-    result = json.loads(run_orchestrator_tool("fanout_subagents", calls[0]["args"], work, online))
+    result = json.loads(run_control_tool("fanout_subagents", calls[0]["args"], work, online))
     return report("orchestrator", result["status"] == "ok", result["message"], t)
 
 
 async def check_department() -> bool:
     t = time.time()
-    spec = get_department("sales")
-    tools = build_department_tools(spec, os.path.join(PROJECT_ROOT, "data", "devices", "sales", "shared", spec.csv_name))
-    messages = [SystemMessage(render_department_prompt(spec)),
-                HumanMessage(f"Run exactly this command with shell_executor and nothing else: {COMMAND}")]
-    reply = await chat_model().bind_tools(tools).ainvoke(messages)
-    calls = [c for c in reply.tool_calls if c["name"] == "shell_executor"]
+    card = load_card(os.path.join(DEVICES_DIR, "sales"))
+    policy = department_policy(card)
+    tools = {t.name: t for t in build_file_tools(policy, with_bash=True, skills_for=card.name)}
+    messages = [SystemMessage(render_department_prompt(card, policy)),
+                HumanMessage(f"Run exactly this command with the bash tool and nothing else: {COMMAND}")]
+    reply = await chat_model().bind_tools(list(tools.values())).ainvoke(messages)
+    calls = [c for c in reply.tool_calls if c["name"] == "bash"]
     if not calls:
-        return report("department", False, f"no shell_executor call (tool calls: {[c['name'] for c in reply.tool_calls]})", t)
-    result = json.loads(await tools[1].ainvoke(calls[0]["args"]))
-    return report("department", result["status"] == "ok",
-                  f"command: {calls[0]['args'].get('command', '')[:90]} -> {result['status']}", t)
+        return report("department", False, f"no bash call (tool calls: {[c['name'] for c in reply.tool_calls]})", t)
+    output = await tools["bash"].ainvoke(calls[0]["args"])
+    return report("department", "42" in output, f"command: {calls[0]['args'].get('command', '')[:60]} -> "
+                  f"{output.splitlines()[0] if output else 'no output'}", t)
 
 
 async def main() -> None:

@@ -13,3 +13,6 @@ pandas
 openpyxl
 pytest
 pytest-asyncio
+fastapi
+uvicorn[standard]
+sse-starlette

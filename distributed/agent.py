@@ -7,7 +7,7 @@ the conclusion is sent back.
 Usage:
     python -m distributed.agent --department sales
     python -m distributed.agent --department customer --hub ws://100.64.0.1:8800
-    python -m distributed.agent --department product --data /path/to/product_data.csv --id laptop-3
+    python -m distributed.agent --department product --data-dir /path/to/product --id laptop-3
 
 Key constraints:
 - the data file never leaves this process; the hub only sees questions and conclusions
@@ -23,8 +23,8 @@ from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, WebSocketException
 
 from core.agents.worker.graph import build_department_graph, run_department_task
-from core.departments import DEPARTMENTS, get_department
-from core.tools._kernel.constants import PROJECT_ROOT
+from core.departments import DEVICES_DIR, load_card
+from core.tools._kernel._access import department_policy
 from distributed.constants import MAX_FRAME_BYTES, PING_INTERVAL_SECONDS, PING_TIMEOUT_SECONDS, RECONNECT_DELAY_SECONDS
 from distributed.protocol import REGISTER, REGISTER_ACK, RESULT, TASK, ProtocolError, decode, encode
 from utils import console
@@ -37,8 +37,8 @@ logger = get_logger(__name__)
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run one department agent.")
-    parser.add_argument("--department", required=True, choices=sorted(DEPARTMENTS))
-    parser.add_argument("--data", default="", help="the department view (default: data/devices/<department>/shared/...)")
+    parser.add_argument("--department", required=True, help="department folder name under data/devices/")
+    parser.add_argument("--data-dir", default="", help="the department folder with department.json (default: data/devices/<department>)")
     parser.add_argument("--hub", default=f"ws://{settings.hub_host}:{settings.hub_port}", help="hub url")
     parser.add_argument("--id", default="", help="device id shown to the orchestrator (default: pc-<department>)")
     return parser.parse_args()
@@ -83,16 +83,15 @@ async def main() -> None:
     # 先接管终端输出再配置日志：structlog 只在配置时绑定一次 stderr
     session = capture(f"agent-{args.department}", "distributed.agent")
     setup_logging(settings.log_level)
-    spec = get_department(args.department)
-    data_path = os.path.abspath(args.data or os.path.join(PROJECT_ROOT, "data", "devices", spec.name, "shared", spec.csv_name))
-    if not os.path.isfile(data_path):
-        raise SystemExit(f"data file not found: {data_path}")
+    spec = load_card(args.data_dir or os.path.join(DEVICES_DIR, args.department))
+    policy = department_policy(spec)
     device_id = args.id or f"pc-{spec.name}"
-    graph = build_department_graph(spec, data_path)
-    banner = f"{spec.display_name} agent on {device_id} · data {data_path} · model {settings.llm_model}"
+    graph = build_department_graph(spec, policy)
+    banner = (f"{spec.display_name} agent on {device_id} · data {spec.shared_dir} (read-only) · "
+              f"workspace {policy.workspace} · model {settings.llm_model}")
     console.say(spec.name, banner, "bold")
 
-    identity = {"device_id": device_id, "department": spec.name, "capability": spec.capability}
+    identity = {"device_id": device_id, "department": spec.name, "capability": spec.description}
     waiting = False
     while True:
         try:

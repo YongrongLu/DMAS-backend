@@ -54,12 +54,14 @@ class DepartmentState(TypedDict):
     Attributes:
         task:           {"task_id", "department", "question", ...} as dispatched.
         messages:       the department agent's own conversation.
+        plan:           the agent's own plan phases.
         iteration:      LLM calls so far.
         tokens:         tokens used so far.
         result:         the conclusion sent back to the orchestrator.
     """
     task: dict
     messages: Annotated[list, add_messages]
+    plan: list[dict]
     iteration: int
     tokens: Annotated[int, operator.add]
     result: dict

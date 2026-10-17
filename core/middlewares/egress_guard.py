@@ -9,8 +9,8 @@ Provides:
 - apply_egress_guard:   check a conclusion and audit the decision
 
 Key constraints:
-- identifiers are matched against the real restricted values of this
-  device's view (e.g. customer ids), never against a pattern alone
+- identifiers are matched against the real values of the sensitive columns
+  listed in the department card (e.g. customer ids), never against a pattern alone
 - numbers are not identifiers: "£15,616", "15616.5" and "15616%" are skipped
 - fewer than EGRESS_MAX_ID_HITS identifiers are redacted; that many or more,
   or more than EGRESS_MAX_TABLE_LINES raw CSV-like lines, blocks the whole
@@ -21,10 +21,13 @@ Key constraints:
 import re
 from dataclasses import dataclass
 
-from core.data.audit import record_denial
-from core.data.loader import load_restricted_values
-from core.data.policy import denial_message
-from core.departments.base import DepartmentSpec
+import os
+from functools import lru_cache
+
+import pandas as pd
+
+from core.departments import DepartmentCard
+from core.middlewares.audit import record_denial
 from core.middlewares.constants import (
     EGRESS_MAX_CHARS,
     EGRESS_MAX_ID_HITS,
@@ -60,23 +63,23 @@ def _table_lines(text: str) -> int:
     return sum(1 for line in text.splitlines() if len(_FIELD_COMMA_RE.findall(line)) >= 4)
 
 
-def guard_text(text: str, spec: DepartmentSpec, restricted_values: frozenset[str]) -> EgressVerdict:
+def guard_text(text: str, card: DepartmentCard, restricted_values: frozenset[str]) -> EgressVerdict:
     """Check one department conclusion.
 
     Args:
         text:               the conclusion about to leave the device.
-        spec:               the department.
-        restricted_values:  the identifiers of this device's view.
+        card:               the department.
+        restricted_values:  the identifiers of this device's sensitive columns.
     """
     hits = [m for m in _TOKEN_RE.finditer(text) if m.group(0) in restricted_values]
     if len({m.group(0) for m in hits}) >= EGRESS_MAX_ID_HITS:
         reason = f"{len(hits)} restricted identifiers in the conclusion"
-        return EgressVerdict("blocked", f"[Blocked by the {spec.display_name} egress guard: {reason}] "
-                                        f"{denial_message(spec)}", (reason,))
+        return EgressVerdict("blocked", f"[Blocked by the {card.display_name} egress guard: {reason}] "
+                                        f"{card.denial_message}", (reason,))
     if _table_lines(text) > EGRESS_MAX_TABLE_LINES:
         reason = "the conclusion looks like a raw data dump"
-        return EgressVerdict("blocked", f"[Blocked by the {spec.display_name} egress guard: {reason}] "
-                                        f"{denial_message(spec)}", (reason,))
+        return EgressVerdict("blocked", f"[Blocked by the {card.display_name} egress guard: {reason}] "
+                                        f"{card.denial_message}", (reason,))
 
     action, reasons = "pass", []
     if hits:
@@ -91,9 +94,30 @@ def guard_text(text: str, spec: DepartmentSpec, restricted_values: frozenset[str
     return EgressVerdict(action, text, tuple(reasons))
 
 
-def apply_egress_guard(text: str, spec: DepartmentSpec, data_path: str) -> EgressVerdict:
-    """Check a department conclusion against this device's restricted values, auditing any change."""
-    verdict = guard_text(text, spec, load_restricted_values(spec, data_path))
+@lru_cache(maxsize=16)
+def _column_values(path: str, mtime_ns: int, column: str) -> frozenset[str]:
+    """Distinct values of one column of a CSV or Excel file; cached until the file changes."""
+    reader = pd.read_excel if path.endswith((".xlsx", ".xls")) else pd.read_csv
+    try:
+        values = reader(path, usecols=[column], dtype=str)[column].dropna().unique()
+    except (ValueError, KeyError):
+        return frozenset()
+    return frozenset(values)
+
+
+def load_sensitive_values(card: DepartmentCard) -> frozenset[str]:
+    """Every value of the sensitive columns listed in the department card."""
+    values: set[str] = set()
+    for item in card.sensitive:
+        path = os.path.join(card.shared_dir, item["file"])
+        if os.path.isfile(path):
+            values |= _column_values(path, os.stat(path).st_mtime_ns, item["column"])
+    return frozenset(values)
+
+
+def apply_egress_guard(text: str, card: DepartmentCard) -> EgressVerdict:
+    """Check a department conclusion against this device's sensitive values, auditing any change."""
+    verdict = guard_text(text, card, load_sensitive_values(card))
     if verdict.action in ("redacted", "blocked"):
-        record_denial(spec.name, "egress_guard", "; ".join(verdict.reasons))
+        record_denial(card.name, "egress_guard", "; ".join(verdict.reasons))
     return verdict

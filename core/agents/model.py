@@ -55,6 +55,9 @@ def chat_model(thinking: bool | None = None) -> ChatOpenAI:
         temperature=settings.llm_temperature,
         max_tokens=settings.llm_max_tokens,
         extra_body=extra_body,
+        # 流式调用：ainvoke 内部也会逐 token 触发 on_llm_new_token，SSE 桥才能把 token 推给前端
+        streaming=True,
+        stream_usage=True,
     )
 
 
@@ -63,13 +66,14 @@ def _is_empty(message: AIMessage) -> bool:
     return not message.tool_calls and not str(message.content or "").strip()
 
 
-async def invoke(model, messages: list, *, role: str) -> AIMessage:
+async def invoke(model, messages: list, *, role: str, config=None) -> AIMessage:
     """Call the model with retries.
 
     Args:
         model:      a chat model, possibly with tools bound.
         messages:   the request.
         role:       who is calling, for logs.
+        config:     the node's RunnableConfig, so callbacks (e.g. the SSE bridge) see the call.
 
     Raises:
         the last transient error after MAX_RETRIES retries, or RuntimeError
@@ -77,7 +81,7 @@ async def invoke(model, messages: list, *, role: str) -> AIMessage:
     """
     for attempt in range(MAX_RETRIES + 1):
         try:
-            response = await model.ainvoke(messages)
+            response = await model.ainvoke(messages, config=config)
             if not _is_empty(response):
                 return response
             logger.warning("llm_empty_response", role=role, attempt=attempt + 1)

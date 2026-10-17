@@ -1,0 +1,7 @@
+{
+  "name": "customer",
+  "display_name": "Customer Department",
+  "description": "Purchase history of identified customers: customer id, order date, country, value segment, quantity and amount, plus sale / return / cancellation flags. Answers how customer behaviour changed: who buys, how often, how much, and who stayed, left or is new.",
+  "record_label": "customer-level",
+  "sensitive": [{"file": "customer_data.csv", "column": "customer_id"}, {"file": "customer_data.csv", "column": "invoice_id"}]
+}
