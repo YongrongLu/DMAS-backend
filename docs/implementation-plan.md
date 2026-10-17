@@ -45,7 +45,7 @@
                  │   task（部门问题）/ result（部门结论）   ← 只传这两种消息
       ┌──────────┼──────────────────┐
   Sales 设备     Customer 设备       Product 设备
-  sales.csv      customers.csv       products.csv          ← 原始数据只在这里
+  sales_data.csv customer_data.csv   product_data.csv      ← 原始数据只在这里
   skills/*       skills/*            skills/*
       └──────────┴────────┬─────────┘    （4 个进程都调用同一个 endpoint）
          租用 GPU：vLLM · Nemotron 3.5 Lightning 30B-A3B（唯一的模型）
@@ -105,12 +105,12 @@ distributed-mas-demo/
 │   └── implementation-plan.md
 ├── data/
 │   ├── README.md                     # Data card：来源、许可、字段定义、派生逻辑（Demo 时展示）
-│   ├── raw/                          # online_retail_II.xlsx（不进 git）
-│   └── departments/                  # 生成的部门 CSV（不进 git，每台设备只拷贝自己那一份）
+│   ├── raw/original_dataset.xlsx     # UCI 原始数据
+│   ├── processed/cleaned_transactions.csv.gz
+│   └── devices/<dept>/shared/        # 生成的部门视图，每台设备只拷贝自己那一份
 ├── scripts/
-│   ├── download_dataset.py
-│   ├── eda_find_decline.py
-│   ├── build_department_views.py
+│   ├── build_department_views.py     # processed → 三份部门视图
+│   ├── ground_truth_report.py        # 核对 Agent 答案用的标准数字
 │   ├── run_department.py             # 单个部门的本地调试入口（Phase 2）
 │   ├── run_local.py                  # 单进程运行 4 个 Agent（Phase 3）
 │   └── test_tool_calling.py
@@ -286,7 +286,7 @@ if __name__ == "__main__":
 
 **为什么不开放任意 shell 或任意 Python（需要确认的设计决定）**：
 
-- **隐私**：只要有 `cat customers.csv` 或 `print(df)`，原始行就会进入 LLM 上下文，到达 GPU，甚至可能被带回给 Orchestrator。输出过滤很难拦住所有泄露的形式。
+- **隐私**：只要有 `cat customer_data.csv` 或 `print(df)`，原始行就会进入 LLM 上下文，到达 GPU，甚至可能被带回给 Orchestrator。输出过滤很难拦住所有泄露的形式。
 - **小模型**：Lightning 激活参数约 3B。让它每次现写 pandas 代码，不如让它带参数调用一个已经测过的脚本可靠。
 - **可复现**：同样的问题，每次得到同样的数字，方便彩排和核对。
 
@@ -342,7 +342,7 @@ class DepartmentSpec:
   "columns": ["country", "period_a", "period_b", "delta", "pct_change", "contribution", "cum_share"],
   "rows": [["...", "...", "...", "...", "...", "...", "..."]],
   "notes": ["<不完整月份 / 被隐藏的分组 / 数据缺口>"],
-  "source": "sales.csv · derived from UCI Online Retail II"
+  "source": "sales_data.csv · derived from UCI Online Retail II"
 }
 ```
 
@@ -379,40 +379,68 @@ Orchestrator **自己不拒绝**数据请求，而是一律转给数据所属的
 
 ## 7. 数据
 
+字段定义、清洗规则和已知缺口的完整说明见 [data/README.md](../data/README.md)。Demo 时把这一页当作数据来源的证据来展示。
+
 ### 7.1 来源
 
 - [UCI Online Retail II](https://archive.ics.uci.edu/dataset/502/online+retail+ii)，许可为 CC BY 4.0（以 UCI 页面标注为准）。
-- 时间范围为 2009-12-01 到 2011-12-09，约 100 万行，xlsx 文件，分两个 sheet。
-- 原始字段：Invoice、StockCode、Description、Quantity、InvoiceDate、Price、Customer ID、Country。
-- 以 `C` 开头的 Invoice 是取消或退货，对应的 Quantity 为负数。
+- 仓库里有原始 xlsx（`data/raw/`），以及清洗好的全量明细（`data/processed/cleaned_transactions.csv.gz`，103 万行，2009-12 到 2011-12）。
 
-### 7.2 三份部门视图
+### 7.2 时间窗口
 
-三份视图都包含 `month` 和 `country` 这两个维度。Orchestrator 做跨部门追问时，可以按这两个维度对齐，不需要共享任何 ID。
+- 部门视图覆盖 **2009-12-01 到 2011-04-30**，把 2011 年 5 月初当作"今天"。
+- 要分析的是 2011 年 2–4 月，对比去年同期（2010 年 2–4 月）。两年的交易日分别是 72 天和 74 天，所以下降不是日历造成的。
+- 不包含 2011 年 5 月以后的数据：原始数据从 5 月开始回升，放进来就和 CEO 的问题"我们的销售在下降"矛盾了。
+- 第一版数据只有 2010 年 11–12 月，那段时间的"下降"只是圣诞季结束加节假日停业，已经弃用。
 
-| CSV | 粒度 | 维度 | 指标 |
+### 7.3 三份部门视图
+
+三份视图都是明细行，由 `scripts/build_department_views.py` 从 processed 数据生成。生成过程是确定的：同样的输入，每次输出的 CSV 逐字节相同，sha256 记录在 `data/devices/manifest.json` 里。
+
+每份视图只有一个其他两份没有的维度，所以单个部门回答不了整个问题：
+
+| 部门 | 文件 | 独有维度 | 其他列 |
 |---|---|---|---|
-| `sales.csv` | 日 × 国家 | date, week, month, country | revenue, orders, units, aov = revenue/orders, units_per_order |
-| `customers.csv` | 客户 × 月 | month, country, segment（基准期 RFM 分层）, customer_type（new/returning）, cohort_month；customer_id 只在内部使用 | active_customers, revenue, orders, aov, revenue_per_customer, new_customers |
-| `products.csv` | SKU × 月（是否加国家维度，在 Phase 0 看数据量后再定） | stock_code（结果里带上 description）, month, price_band | units_sold, revenue, returned_units, return_rate = returned/sold, active_skus |
+| Sales | `devices/sales/shared/sales_data.csv` | country | invoice_id、时间、数量、金额、标记 |
+| Customer | `devices/customer/shared/customer_data.csv` | customer_id | invoice_id、时间、country、segment、数量、金额、标记 |
+| Product | `devices/product/shared/product_data.csv` | stock_code | invoice_id、时间、description、category、数量、单价、金额、标记 |
 
-`build_department_views.py` 必须确定且可复现：固定清洗规则，输出时附上行数和 sha256。
+- Customer 视图也带 country，跨部门追问时可以按国家对齐。客户和国家几乎是一一对应的。
+- 三份视图共享的维度是时间。
+- 派生列：
+  - `segment`：以 2011-01-31 为基准，按之前 12 个月的营收给客户分层，分为 high / mid / low / lapsed / new；
+  - `category`：按商品描述里的关键词归类，大约 6% 的营收归在 Other。
+- 指标都从明细算出来，在 DepartmentSpec 里定义：
+  - revenue = Σ line_amount（只算有效销售）；
+  - orders = 不同 invoice_id 的个数；
+  - AOV = revenue / orders；
+  - return rate = 退货件数 / 售出件数。
 
-### 7.3 Data card（`data/README.md`）
+  所以 DepartmentSpec 要多一个"行过滤"的概念：有效销售用来算营收和订单，退货行用来算退货率。
 
-- 内容包括：来源链接、许可、下载日期、原始文件的 sha256、清洗规则（取消单的处理、负数和零价格、缺失 Customer ID 的处理）、三份视图的字段定义、已知的数据缺口。
-- Demo 时直接展示这一页，作为"数据来源"的证据。
+### 7.4 Ground truth
 
-### 7.4 三个坑
+`scripts/ground_truth_report.py` 每个部门只读自己那份视图，算出它应该得出的结论。这个脚本的作用是证明每个部门单靠自己的数据就能找到自己那一块。
 
-1. **"销售下降"必须在数据里真实存在。** 这个数据集季节性很强（Q4 是高峰），2011-12 又只到 12 月 9 日，直接看会像暴跌。`eda_find_decline.py` 要先找出一个真实的下降窗口，CEO 的问题里写明时间段，data card 里标注不完整的月份。
-2. **EDA 结果只用来核对 Agent 的答案对不对，不能写进任何 prompt。** PRD §7 要求结论不能硬编码。
-3. **很多订单没有 Customer ID**（游客下单），所以 customers.csv 的营收加起来和 sales.csv 对不上。data card 里要写清楚，部门 Agent 在 Caveats 里也应该能指出这一点。
+| 部门 | 应该发现的事 |
+|---|---|
+| Sales | 营收同比 −12.0%，而且越到后面降得越多（2 月 −5.6%，3 月 −9.4%，4 月 −20.3%）；订单 −11.8%，AOV 基本不变；英国 −12.9%，其他国家 −6.4% |
+| Customer | 881 个老客户的订单 −16%、营收 −20%，流失和新增基本抵消；high_value 客户大多还在（353 → 342），但订单 −24.5% |
+| Product | 下降主要在 Home Decor（−25.7%）和 Lighting & Candles（−36.9%）；去年营收前 200 的 SKU 里有 18 个今年没有卖出，它们去年的营收相当于降幅的 37%；下降分布很散，降幅最大的 50 个 SKU 只占 23%；退货率从 7.9% 降到 6.5%，排除退货是原因 |
 
-### 7.5 分发
+这些数字只用来核对 Agent 的答案，**不能写进任何 prompt**（PRD §7 要求结论不能硬编码）。
 
-- 部门 CSV **不进 git**：如果仓库里有三份 CSV，每台设备 clone 下来都会拿到全部数据，Demo 的说法就站不住了。
-- 做法：在一台机器上生成三份 CSV，然后每台设备只拷贝自己那一份到 `data/departments/<dept>/`，部门设备上也不留原始 xlsx。
+### 7.5 已知的坑
+
+1. **游客订单没有 customer_id**：大约 23% 的行（13% 的营收），所以 Customer 的营收比 Sales 低。部门 Agent 应该在 Caveats 里指出这一点。
+2. **节假日停业**：2010-12-24 到 2011-01-03 没有交易，跨这段时间做环比时要注意。
+3. **segment 的基准期包含了 2010 年 2–4 月**：所以对比 high_value 客户今年和去年的变化时，带有一点均值回归的成分，Agent 应该在 Caveats 里注明。
+
+### 7.6 分发
+
+- 每台部门设备只拷贝自己的 `data/devices/<dept>/shared/` 目录，部门设备上不留 `raw/`、`processed/` 和其他部门的目录。
+- 现在所有数据都在 git 里，clone 一次就能拿到全部，所以 Demo 设备上不要用 clone 来分发数据。
+- `data/devices/finance/` 是第一版数据留下的，当前的三个部门用不到。
 
 ---
 
@@ -541,7 +569,7 @@ def build_department_graphs(data_root: str) -> dict:          # 本地模式：�
   - `render_online_agents_block` 把能力卡渲染进 `<ONLINE_AGENTS>`，这就是 Orchestrator"知道每个 Agent 擅长什么"（PRD §12）的来源。
 - **agent.py**：
   ```bash
-  python -m distributed.agent --department customer --data data/departments/customer/customers.csv \
+  python -m distributed.agent --department customer --data data/devices/customer/shared/customer_data.csv \
       --hub ws://<orchestrator-ip>:8800 --id pc-customer
   ```
   - 启动时先校验 CSV 和 spec 是否匹配；
@@ -561,7 +589,7 @@ def build_department_graphs(data_root: str) -> dict:          # 本地模式：�
 
 | 批次 | 内容 | 验收 | 是否需要 GPU |
 |---|---|---|---|
-| **0 地基和数据** | 见下方清单 | 三份 CSV、data card，以及一页 EDA 结论（作为 ground truth，不进 prompt） | 否 |
+| **0 地基和数据** | 见下方清单 | 三份部门视图、data card、ground truth 脚本（数据部分已完成） | 否 |
 | **1 数据层、Skills、工具** | `core/departments`、`core/data`、7 个 skills、`_skills.py`、`_shell_executor.py`、`descriptions/skills.py`、`bundles/department.py`、`egress_guard.py` 及其测试 | pytest 全部通过；手动运行每个 skill 的命令都能出结果；`cat`、管道、越权 skill、导出申请都被拒绝 | 否 |
 | **2 部门 worker 图** | 复制 worker 子图；写部门 prompt；`scripts/run_department.py`；扩展 `test_tool_calling.py` | 每个部门都能回答 PRD §4 的问题，数字和 EDA 一致；隐私请求被拒绝 | 是（可以先用托管 API） |
 | **3 Orchestrator 本地模式** | 复制主图、state、orchestrator、announce、plan 和 fanout 工具；写新的 prompt；`scripts/run_local.py` | 输入 CEO 问题，输出包含五部分的完整报告 | 是 |
@@ -571,12 +599,12 @@ def build_department_graphs(data_root: str) -> dict:          # 本地模式：�
 Phase 0 的清单：
 
 - [x] 精简 `requirements.txt`
-- [ ] `.gitignore`：`.venv/`、`.env`、`data/raw/`、`data/departments/`、`logs/`、`__pycache__/`
+- [ ] `.gitignore`：`.venv/`、`.env`、`logs/`、`__pycache__/`（数据要不要移出 git，需要和队友商量）
 - [ ] `.env.example`
 - [ ] 复制 `utils/`，并精简 settings
 - [ ] 精简 `core/agents/model.py` 和 `constants.py`
-- [ ] `scripts/download_dataset.py`、`eda_find_decline.py`、`build_department_views.py`
-- [ ] `data/README.md`
+- [x] `scripts/build_department_views.py`、`scripts/ground_truth_report.py`
+- [x] `data/README.md`
 
 Phase 1 不需要 GPU，可以和 vLLM 的部署同时进行。GPU 按小时计费，等到 Phase 2 真正需要时再租。
 
@@ -605,7 +633,7 @@ Phase 1 不需要 GPU，可以和 vLLM 的部署同时进行。GPU 按小时计�
 
 1. `shell_executor` 是否只允许运行 Skill 脚本（本文的方案），"临时 Python 模式"是否放到以后再做（§5.5）。
 2. 是否保留 `data-access-request` 这个 skill。不保留的话，隐私 Demo 里的拒绝就完全取决于模型自己的判断，措辞和时机都不稳定。
-3. `products.csv` 是否加国家维度（Phase 0 看数据量后再定）。
+3. ~~Product 视图是否加国家维度~~：不加。Product 的独有维度是 stock_code，国家留给 Sales（§7.3）。
 4. 找主办方确认 33B 的计数口径（§1）。
 
 **风险**
@@ -613,7 +641,7 @@ Phase 1 不需要 GPU，可以和 vLLM 的部署同时进行。GPU 按小时计�
 | 风险 | 应对 |
 |---|---|
 | 小模型调用工具不稳定 | 每个部门只有 2 个工具；参数用 enum；SKILL.md 给出可以直接照抄的用法行；用 `test_tool_calling.py` 量化成功率 |
-| 数据里的"下降"不明显，或者被季节性掩盖 | Phase 0 的 EDA 先确定窗口；问题里写明时间段；data card 标注季节性和不完整的月份 |
+| 数据里的"下降"不明显，或者被季节性掩盖 | 已经改用同比窗口（§7.2）；CEO 的问题里写明时间段 |
 | 现场网络不稳定 | 所有设备连 Tailscale；hub 有断线重连；提前录好备用视频 |
 | GPU 费用 | Phase 0 和 1 不租；不用时在 Brev 控制台停机 |
 | langgraph 升级导致 `ControlAwareToolNode` 失效 | `requirements.txt` 锁定 `langgraph==1.2.10` |

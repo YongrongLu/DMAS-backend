@@ -1,0 +1,62 @@
+{
+  "source": "data/processed/cleaned_transactions.csv.gz",
+  "source_sha256": "e613ad4dbce2a046f409168ea0fccee7becd3b8e3f2953c9458284d4ec00865d",
+  "dataset": "UCI Online Retail II (https://archive.ics.uci.edu/dataset/502/online+retail+ii)",
+  "window": {
+    "start": "2009-12-01",
+    "end": "2011-04-30"
+  },
+  "segment_as_of": "2011-01-31",
+  "views": {
+    "sales": {
+      "path": "sales/shared/sales_data.csv",
+      "rows": 663024,
+      "columns": [
+        "invoice_id",
+        "invoice_date",
+        "country",
+        "quantity",
+        "line_amount",
+        "is_cancellation",
+        "is_return",
+        "is_valid_sale"
+      ],
+      "sha256": "a3a82d2629335ba8120285201f880af04ffcb607c6c705af63b733f9ea5609e2"
+    },
+    "customer": {
+      "path": "customer/shared/customer_data.csv",
+      "rows": 512616,
+      "columns": [
+        "invoice_id",
+        "invoice_date",
+        "customer_id",
+        "country",
+        "segment",
+        "quantity",
+        "line_amount",
+        "is_cancellation",
+        "is_return",
+        "is_valid_sale"
+      ],
+      "sha256": "0b4306595cf3a61f77b1a515abe43e70ce4e1029bae1e0bb072c9df5c1330a83"
+    },
+    "product": {
+      "path": "product/shared/product_data.csv",
+      "rows": 663024,
+      "columns": [
+        "invoice_id",
+        "invoice_date",
+        "stock_code",
+        "description",
+        "category",
+        "quantity",
+        "unit_price",
+        "line_amount",
+        "is_cancellation",
+        "is_return",
+        "is_valid_sale"
+      ],
+      "sha256": "a183e3532a75488e972a55311391224134066018f0c9ac0ca4d7f72a344d6a3f"
+    }
+  }
+}
