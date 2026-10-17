@@ -13,6 +13,9 @@ Key constraints:
 - the data file never leaves this process; the hub only sees questions and conclusions
 - tasks run concurrently; losing the hub cancels them (the hub has already
   reported them as failed) and the process reconnects
+- the person at this device approves every task, any opening of private/ and
+  every delivery (distributed/approval.py); each pause is reported to the hub
+  as an event so the orchestrator can show who it is waiting for
 """
 
 import argparse
@@ -26,7 +29,8 @@ from core.agents.worker.graph import build_department_graph, run_department_task
 from core.departments import DEVICES_DIR, load_card
 from core.tools._kernel._access import department_policy
 from distributed.constants import MAX_FRAME_BYTES, PING_INTERVAL_SECONDS, PING_TIMEOUT_SECONDS, RECONNECT_DELAY_SECONDS
-from distributed.protocol import REGISTER, REGISTER_ACK, RESULT, TASK, ProtocolError, decode, encode
+from distributed.approval import ask_owner
+from distributed.protocol import EVENT, REGISTER, REGISTER_ACK, RESULT, TASK, ProtocolError, decode, encode
 from utils import console
 from utils.logging import get_logger, setup_logging
 from utils.run_log import capture
@@ -48,10 +52,24 @@ async def _answer(ws: ClientConnection, graph, spec, device_id: str, dispatch_id
     """Run one task and send its result."""
     tag = f"{spec.name} · {task['task_id']}"
     console.say(tag, f"question: {console.preview(task['question'], 400)}", "bold")
-    result = await run_department_task(graph, spec, task)
+
+    async def notify(event: dict) -> None:
+        try:
+            await ws.send(encode(EVENT, {"dispatch_id": dispatch_id, "event": event}))
+        except ConnectionClosed:
+            pass
+
+    async def ask(request: dict) -> bool:
+        await notify({"name": "approval_requested", "kind": request["kind"]})
+        approved = await ask_owner(spec.name, request)
+        await notify({"name": "approval_decided", "kind": request["kind"], "approved": approved})
+        return approved
+
+    result = await run_department_task(graph, spec, task, ask)
     result["device_id"] = device_id
+    color = {"success": "green", "declined": "yellow"}.get(result["status"], "red")
     console.block(f"{tag} · {result['status']} in {result['elapsed_seconds']}s · sent to the orchestrator",
-                  result["summary"].splitlines()[:40], "green" if result["status"] == "success" else "red")
+                  result["summary"].splitlines()[:40], color)
     try:
         await ws.send(encode(RESULT, {"dispatch_id": dispatch_id, "result": result}))
     except ConnectionClosed:
@@ -88,7 +106,7 @@ async def main() -> None:
     device_id = args.id or f"pc-{spec.name}"
     graph = build_department_graph(spec, policy)
     banner = (f"{spec.display_name} agent on {device_id} · data {spec.shared_dir} (read-only) · "
-              f"workspace {policy.workspace} · model {settings.llm_model}")
+              f"workspace {policy.workspace} · model {settings.llm_model} · approvals {settings.approval_mode}")
     console.say(spec.name, banner, "bold")
 
     identity = {"device_id": device_id, "department": spec.name, "capability": spec.description}

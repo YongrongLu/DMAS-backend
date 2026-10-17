@@ -58,6 +58,9 @@ class DepartmentState(TypedDict):
         iteration:      LLM calls so far.
         tokens:         tokens used so far.
         result:         the conclusion sent back to the orchestrator.
+        grants:         restricted folders the device owner opened for this task.
+        access:         the owner's answer about the restricted folder: "" (not asked), "granted" or "denied".
+        blocked:        restricted paths the last tools step was refused, waiting for the owner.
     """
     task: dict
     messages: Annotated[list, add_messages]
@@ -65,3 +68,6 @@ class DepartmentState(TypedDict):
     iteration: int
     tokens: Annotated[int, operator.add]
     result: dict
+    grants: list[str]
+    access: str
+    blocked: list[str]

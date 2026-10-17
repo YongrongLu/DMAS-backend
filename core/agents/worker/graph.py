@@ -1,30 +1,46 @@
-"""Department agent graph -- a ReAct loop over file, bash, skill and plan tools
+"""Department agent graph -- a ReAct loop over file, bash, skill and plan tools,
+with the device owner in the loop
 
-    START → agent ⇄ tools
-              ↓ (no tool call)
-            finish → END
+    START → intake ⏸ ──(declined)──────────────────────────┐
+              ↓                                            │
+            agent ⇄ tools ──(blocked on private/)→ access ⏸ │
+              ↓ (no tool call)          ↑__________↓       │
+            finish → deliver ⏸ → END ←─────────────────────┘
+
+⏸ = LangGraph interrupt: the graph stops and the agent process asks the
+person at the device (distributed/approval.py), then resumes with True / False.
 
 Provides:
 - build_department_graph:   compile the agent of one department
-- run_department_task:      run one dispatched task to a result dict; never raises
+- run_department_task:      run one dispatched task to a result dict, answering the pauses; never raises
 
 Key constraints:
 - every file and bash tool is bound to the department's AccessPolicy:
-  its shared/ data (as data/) read-only, its workspace read/write
+  its shared/ data (as data/) read-only, its workspace read/write; the
+  restricted private/ folder opens only after the owner approves, for this
+  task only, and is asked about at most once per task
 - tool calls of one turn run in order; plan calls update the agent's plan
 - bash only runs after the agent has loaded at least one skill in this task,
   so the methods in the skills are actually used
 - at the last allowed iteration the model is called without tools, so it
   has to write its conclusion
-- finish runs the egress guard; the result dict is the only thing that
-  leaves the department:
+- finish runs the egress guard, deliver lets the owner withhold the result;
+  the result dict is the only thing that leaves the department:
   {"task_id", "department", "status", "summary", "egress", "iterations", "tokens", "elapsed_seconds"}
+  status: success / failed / declined (the owner refused the task or withheld the result)
+- interrupts only happen in intake, access and deliver, which have no side
+  effects before the pause, so re-running them on resume is safe
 """
 
+import dataclasses
+import os
 import time
+import uuid
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command, interrupt
 
 from core.agents.model import chat_model, invoke
 from core.agents.state import DepartmentState
@@ -43,6 +59,13 @@ MAX_ITERATIONS = 24
 FINAL_TURN_PROMPT = "You have used your budget. Write your final answer now, without tool calls."
 SKILL_FIRST = ("Not run: load the skill(s) that fit this question with load_skill before running commands - "
                "they contain the methods to use (see <AVAILABLE_SKILLS>). Then run your command again.")
+ACCESS_GRANTED = ("The device owner opened the restricted folder {path} for this task. Run the blocked call again. "
+                  "Its data stays on this device: report aggregates only.")
+ACCESS_DENIED = ("The device owner kept the restricted folder {path} closed. Do not try it again; answer with the "
+                 "data you have and name the gap in your caveats.")
+TASK_DECLINED = "The device owner declined this task; no analysis was run on this device."
+RESULT_WITHHELD = "The device owner reviewed the conclusion and withheld it; nothing was sent from this device."
+PATH_TOOLS = ("view_file", "glob_tool", "grep_tool")
 
 
 def _text(message: AIMessage) -> str:
@@ -70,6 +93,10 @@ def _describe_result(content: str) -> tuple[str, str]:
     return f"→ {console.preview(first, 140)}", color
 
 
+def _inside(path: str, root: str) -> bool:
+    return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
+
+
 def build_department_graph(card: DepartmentCard, policy: AccessPolicy):
     """Compile the agent of one department.
 
@@ -78,10 +105,35 @@ def build_department_graph(card: DepartmentCard, policy: AccessPolicy):
         policy:     its access policy (workspace + shared data).
     """
     tools = build_file_tools(policy, with_bash=True, skills_for=card.name)
-    tools_by_name = {t.name: t for t in tools}
     model = chat_model()
     model_with_tools = model.bind_tools([*tools, *PLAN_TOOL_SPECS])
     system_prompt = render_department_prompt(card, policy)
+    restricted = os.path.realpath(card.private_dir) if os.path.isdir(card.private_dir) else ""
+    restricted_rel = os.path.relpath(restricted, policy.workspace) if restricted else ""
+
+    def blocked_on_restricted(call: dict, content: str, active: AccessPolicy) -> bool:
+        """Whether a tool call was refused because it reached into the restricted folder."""
+        if not restricted:
+            return False
+        if call["name"] in PATH_TOOLS and content.startswith("Access denied"):
+            return _inside(active.resolve(call["args"].get("path", ".")), restricted)
+        # bash: the Seatbelt profile blocked a read under private/
+        return (call["name"] == "bash" and "Operation not permitted" in content
+                and (restricted in content or restricted_rel in content))
+
+    def ask(kind: str, task: dict, title: str, text: str) -> bool:
+        """Pause the graph until the device owner answers."""
+        return interrupt({"kind": kind, "task_id": task["task_id"], "department": card.name,
+                          "title": f"{card.display_name} · {title}", "text": text}) is True
+
+    async def intake(state: DepartmentState) -> dict:
+        task = state["task"]
+        if ask("task", task, "run this task?",
+               f"The orchestrator asks (task {task['task_id']}):\n\n{task['question']}\n\n"
+               "Run it on this device's data?"):
+            return {}
+        return {"result": {"task_id": task["task_id"], "department": card.name, "status": "declined",
+                           "summary": TASK_DECLINED, "egress": "none", "iterations": 0, "tokens": 0}}
 
     async def agent(state: DepartmentState) -> dict:
         tag = f"{card.name} · {state['task']['task_id']}"
@@ -98,8 +150,11 @@ def build_department_graph(card: DepartmentCard, policy: AccessPolicy):
 
     async def tools_step(state: DepartmentState) -> dict:
         tag = f"{card.name} · {state['task']['task_id']}"
+        # 主人批准过的受限目录只对本次任务开放：每一步按当前授权重新绑定工具
+        active = dataclasses.replace(policy, read_roots=(*policy.read_roots, *state.get("grants", [])))
+        tools_by_name = {t.name: t for t in build_file_tools(active, with_bash=True, skills_for=card.name)}
         work = {"plan": list(state["plan"])}
-        results = []
+        results, blocked = [], []
         # 小模型容易跳过 Skill 直接写代码：本次任务还没加载过任何 Skill 时，bash 先不执行
         skill_loaded = any(isinstance(m, ToolMessage) and m.name == "load_skill" for m in state["messages"])
         for call in state["messages"][-1].tool_calls:
@@ -116,10 +171,23 @@ def build_department_graph(card: DepartmentCard, policy: AccessPolicy):
                     content = f"Error: {exc.__class__.__name__}: {str(exc)[:300]}"
             else:
                 content = f"Error: unknown tool {call['name']!r}"
+            if blocked_on_restricted(call, content, active):
+                blocked.append(_describe_call(call))
             line, color = _describe_result(content)
             console.say(tag, line, color)
             results.append(ToolMessage(content=content, tool_call_id=call["id"], name=call["name"]))
-        return {"messages": results, "plan": work["plan"]}
+        return {"messages": results, "plan": work["plan"], "blocked": blocked}
+
+    async def access(state: DepartmentState) -> dict:
+        task = state["task"]
+        attempts = "\n".join(f"- {console.preview(b, 160)}" for b in state["blocked"])
+        if ask("access", task, "open restricted data?",
+               f"The agent working on task {task['task_id']} tried to read the restricted folder "
+               f"private/:\n{attempts}\n\nQuestion: {console.preview(task['question'], 400)}\n\n"
+               "Open private/ to the agent for this task only?"):
+            return {"access": "granted", "grants": [restricted], "blocked": [],
+                    "messages": [HumanMessage(ACCESS_GRANTED.format(path=restricted_rel))]}
+        return {"access": "denied", "blocked": [], "messages": [HumanMessage(ACCESS_DENIED.format(path=restricted_rel))]}
 
     async def finish(state: DepartmentState) -> dict:
         task = state["task"]
@@ -136,38 +204,69 @@ def build_department_graph(card: DepartmentCard, policy: AccessPolicy):
             "tokens": state["tokens"],
         }}
 
+    async def deliver(state: DepartmentState) -> dict:
+        result = state["result"]
+        if result["status"] != "success":
+            return {}
+        if ask("deliver", state["task"], "send this conclusion?",
+               f"Conclusion for task {result['task_id']} (egress guard: {result['egress']}):\n\n"
+               f"{result['summary']}\n\nSend it to the orchestrator?"):
+            return {}
+        return {"result": {**result, "status": "declined", "summary": RESULT_WITHHELD, "egress": "withheld"}}
+
+    def after_intake(state: DepartmentState) -> str:
+        return END if state["result"] else "agent"
+
     def route(state: DepartmentState) -> str:
         last = state["messages"][-1]
         return "tools" if isinstance(last, AIMessage) and last.tool_calls else "finish"
 
+    def after_tools(state: DepartmentState) -> str:
+        return "access" if state["blocked"] and not state["access"] else "agent"
+
     builder = StateGraph(DepartmentState)
+    builder.add_node("intake", intake)
     builder.add_node("agent", agent)
     builder.add_node("tools", tools_step)
+    builder.add_node("access", access)
     builder.add_node("finish", finish)
-    builder.add_edge(START, "agent")
+    builder.add_node("deliver", deliver)
+    builder.add_edge(START, "intake")
+    builder.add_conditional_edges("intake", after_intake, ["agent", END])
     builder.add_conditional_edges("agent", route, ["tools", "finish"])
-    builder.add_edge("tools", "agent")
-    builder.add_edge("finish", END)
-    return builder.compile()
+    builder.add_conditional_edges("tools", after_tools, ["access", "agent"])
+    builder.add_edge("access", "agent")
+    builder.add_edge("finish", "deliver")
+    builder.add_edge("deliver", END)
+    # interrupt 需要 checkpointer 才能暂停后续跑；每个任务一个 thread，跑完就删
+    return builder.compile(checkpointer=InMemorySaver())
 
 
-async def run_department_task(graph, card: DepartmentCard, task: dict) -> dict:
+async def run_department_task(graph, card: DepartmentCard, task: dict, ask_owner=None) -> dict:
     """Run one dispatched task and return the department's result.
 
-    Any failure becomes a result with status "failed", so the orchestrator
-    can report the gap instead of crashing.
+    Every pause of the graph goes to ask_owner(request) -> bool; without one,
+    everything is approved. Any failure becomes a result with status
+    "failed", so the orchestrator can report the gap instead of crashing.
     """
     t_start = time.time()
+    thread_id = f"{task['task_id']}-{uuid.uuid4().hex[:8]}"
+    config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 2 * MAX_ITERATIONS + 10}
+    step = {"task": task, "messages": [HumanMessage(task["question"])], "plan": [], "iteration": 0,
+            "tokens": 0, "result": {}, "grants": [], "access": "", "blocked": []}
     try:
-        final = await graph.ainvoke(
-            {"task": task, "messages": [HumanMessage(task["question"])], "plan": [], "iteration": 0,
-             "tokens": 0, "result": {}},
-            config={"recursion_limit": 2 * MAX_ITERATIONS + 5},
-        )
+        while True:
+            final = await graph.ainvoke(step, config=config)
+            pauses = final.get("__interrupt__")
+            if not pauses:
+                break
+            step = Command(resume=await ask_owner(pauses[0].value) if ask_owner else True)
         result = dict(final["result"])
     except Exception as exc:
         logger.error("department_task_failed", department=card.name, task_id=task["task_id"], error=str(exc)[:300])
         result = {"task_id": task["task_id"], "department": card.name, "status": "failed",
                   "summary": f"The {card.name} agent failed: {exc.__class__.__name__}: {str(exc)[:300]}"}
+    finally:
+        await graph.checkpointer.adelete_thread(thread_id)
     result["elapsed_seconds"] = round(time.time() - t_start, 1)
     return result

@@ -5,6 +5,8 @@ Provides:
 - render_department_snapshot:   the per-turn plan / budget block
 """
 
+import os
+
 from core.departments import DepartmentCard
 from core.tools._kernel._access import AccessPolicy
 from core.tools._kernel._skills import render_skill_index
@@ -20,7 +22,7 @@ data, and answer one question from the company's coordinator, then stop.
   reading any README or data dictionary there. It may be in any format: CSV, Excel, JSON, SQLite, text,
   PDF ...
 - Your workspace is the current directory: write scripts and intermediate files there.
-- Anything outside data/ and your workspace (other departments, private folders) is off limits.
+- Anything outside data/ and your workspace (other departments' folders) is off limits.{restricted}
 
 ## TOOLS
 - glob_tool / view_file / grep_tool - explore files; view_file pages through text files
@@ -57,9 +59,19 @@ data, and answer one question from the company's coordinator, then stop.
 """
 
 
+RESTRICTED_LINE = """
+- Restricted data in {path}/ : {holds}. It is closed by default: reading it asks the person at this
+  device, who may open it for this task. Use it only when the question needs it."""
+
+
 def render_department_prompt(card: DepartmentCard, policy: AccessPolicy) -> str:
     """The system prompt of one department."""
+    restricted = ""
+    if os.path.isdir(card.private_dir):
+        restricted = RESTRICTED_LINE.format(path=os.path.relpath(card.private_dir, policy.workspace),
+                                            holds=card.restricted or "restricted department files")
     return DEPARTMENT_PROMPT.format(
+        restricted=restricted,
         display_name=card.display_name,
         description=card.description,
         skills=render_skill_index(card.name),

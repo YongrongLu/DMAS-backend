@@ -5,7 +5,7 @@ A department is a folder, not code:
     data/devices/<name>/
     ├── department.json     the card: name, display name, description, sensitive columns
     ├── shared/             data the department's agent may read (any format)
-    └── private/            data that never reaches the agent (optional)
+    └── private/            restricted data: the agent reads it only after the device owner approves (optional)
 
 department.json:
 
@@ -14,7 +14,8 @@ department.json:
       "display_name": "Customer Department",
       "description": "what the data covers; sent to the orchestrator as the capability card",
       "record_label": "customer-level",
-      "sensitive": [{"file": "customer_data.csv", "column": "customer_id"}]
+      "sensitive": [{"file": "customer_data.csv", "column": "customer_id"}],
+      "restricted": "what private/ holds (optional); tells the agent when asking for it is worth it"
     }
 
 Provides:
@@ -47,6 +48,7 @@ class DepartmentCard:
         description:    what the department's data covers.
         record_label:   what one raw record is, used in the denial message.
         sensitive:      [{"file", "column"}] identifier columns that must never leave the device.
+        restricted:     what private/ holds, shown to the agent.
         root:           the department folder.
     """
     name: str
@@ -55,6 +57,7 @@ class DepartmentCard:
     root: str
     record_label: str = "record-level"
     sensitive: tuple[dict, ...] = field(default_factory=tuple)
+    restricted: str = ""
 
     @property
     def shared_dir(self) -> str:
@@ -63,7 +66,7 @@ class DepartmentCard:
 
     @property
     def private_dir(self) -> str:
-        """Data that never reaches the agent."""
+        """Restricted data: opened per task by the device owner."""
         return os.path.join(self.root, "private")
 
     @property
@@ -92,4 +95,5 @@ def load_card(root: str) -> DepartmentCard:
         root=os.path.abspath(root),
         record_label=raw.get("record_label", "record-level"),
         sensitive=tuple(raw.get("sensitive", [])),
+        restricted=raw.get("restricted", ""),
     )

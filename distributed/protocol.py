@@ -6,6 +6,8 @@ Every message is one JSON text frame over WebSocket: {"type": ..., "payload": {.
     register_ack  hub -> agent   {"ok", "message"}
     task          hub -> agent   {"dispatch_id", "task"}       task = {"task_id", "department", "question", ...}
     result        agent -> hub   {"dispatch_id", "result"}     result = the department's result dict
+    event         agent -> hub   {"dispatch_id", "event"}      event = {"name", ...}: progress of a task
+                                                              (owner approvals), never data
 
 Provides:
 - encode / decode:      build and parse a frame, checking the required fields
@@ -24,12 +26,14 @@ REGISTER = "register"
 REGISTER_ACK = "register_ack"
 TASK = "task"
 RESULT = "result"
+EVENT = "event"
 
 REQUIRED_FIELDS = {
     REGISTER: {"device_id", "department", "capability"},
     REGISTER_ACK: {"ok", "message"},
     TASK: {"dispatch_id", "task"},
     RESULT: {"dispatch_id", "result"},
+    EVENT: {"dispatch_id", "event"},
 }
 
 

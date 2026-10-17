@@ -12,6 +12,7 @@ Key constraints:
 - dispatch never raises: offline, disconnect and timeout all come back as a
   failed result, so the orchestrator can report the gap
 - a disconnect fails every pending task of that device at once
+- event frames of a task go to the on_event callback of its dispatch
 """
 
 import asyncio
@@ -22,7 +23,7 @@ from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 
 from distributed.constants import MAX_FRAME_BYTES, PING_INTERVAL_SECONDS, PING_TIMEOUT_SECONDS, REGISTER_TIMEOUT_SECONDS
-from distributed.protocol import REGISTER, REGISTER_ACK, RESULT, TASK, ProtocolError, decode, encode, failed_result
+from distributed.protocol import EVENT, REGISTER, REGISTER_ACK, RESULT, TASK, ProtocolError, decode, encode, failed_result
 from utils import console
 from utils.logging import get_logger
 
@@ -37,8 +38,8 @@ class AgentHub:
         self._server = None
         # device_id -> {"ws", "department", "capability"}
         self._devices: dict[str, dict] = {}
-        # dispatch_id -> (future, device_id)
-        self._pending: dict[str, tuple[asyncio.Future, str]] = {}
+        # dispatch_id -> (future, device_id, on_event)
+        self._pending: dict[str, tuple] = {}
 
     @property
     def url(self) -> str:
@@ -70,8 +71,13 @@ class AgentHub:
         while len(self._devices) < count:
             await asyncio.sleep(0.5)
 
-    async def dispatch(self, task: dict) -> dict:
-        """Send a task to its device and wait for the result; never raises."""
+    async def dispatch(self, task: dict, on_event=None) -> dict:
+        """Send a task to its device and wait for the result; never raises.
+
+        Args:
+            task:       the task, with its device_id.
+            on_event:   optional async callback for the task's progress events (owner approvals).
+        """
         device_id = task.get("device_id", "")
         device = self._devices.get(device_id)
         if device is None:
@@ -79,7 +85,7 @@ class AgentHub:
 
         dispatch_id = uuid.uuid4().hex[:12]
         future = asyncio.get_running_loop().create_future()
-        self._pending[dispatch_id] = (future, device_id)
+        self._pending[dispatch_id] = (future, device_id, on_event)
         t_start = time.time()
         try:
             await device["ws"].send(encode(TASK, {"dispatch_id": dispatch_id, "task": task}))
@@ -102,7 +108,7 @@ class AgentHub:
             return
         try:
             async for raw in ws:
-                self._on_result(device_id, raw)
+                await self._on_frame(device_id, raw)
         except ConnectionClosed:
             pass
         finally:
@@ -136,23 +142,30 @@ class AgentHub:
         console.say("hub", f"+ {department} online @ {device_id} ({ws.remote_address[0]})", "green")
         return device_id
 
-    def _on_result(self, device_id: str, raw) -> None:
-        """Resolve the dispatch a result frame answers."""
+    async def _on_frame(self, device_id: str, raw) -> None:
+        """Resolve the dispatch a result frame answers, or pass an event frame to its callback."""
         try:
             msg_type, payload = decode(raw)
         except ProtocolError as exc:
             logger.warning("bad_frame", device_id=device_id, error=str(exc))
             return
-        pending = self._pending.get(payload["dispatch_id"]) if msg_type == RESULT else None
+        pending = self._pending.get(payload["dispatch_id"]) if msg_type in (RESULT, EVENT) else None
         if pending is None or pending[0].done():
             logger.warning("late_or_unexpected_frame", device_id=device_id, type=msg_type)
+            return
+        if msg_type == EVENT:
+            if pending[2] is not None:
+                try:
+                    await pending[2](payload["event"])
+                except Exception as exc:
+                    logger.warning("event_callback_failed", device_id=device_id, error=str(exc)[:200])
             return
         pending[0].set_result(payload["result"])
 
     def _unregister(self, device_id: str) -> None:
         """Forget a device and fail its pending tasks."""
         info = self._devices.pop(device_id, None)
-        for future, owner in list(self._pending.values()):
+        for future, owner, _ in list(self._pending.values()):
             if owner == device_id and not future.done():
                 future.set_exception(ConnectionError(device_id))
         if info:

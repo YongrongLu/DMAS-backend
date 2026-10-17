@@ -37,15 +37,30 @@ def initial_state(query: str) -> dict:
     }
 
 
+APPROVAL_STEPS = {"task": "run the task", "access": "open its restricted data", "deliver": "send the conclusion"}
+STATUS_STYLE = {"success": ("✓", "green"), "declined": ("⊘", "yellow")}
+
+
 async def department(task: dict, config: RunnableConfig) -> dict:
     """Run one task on the device of its department, through the hub."""
     await emit(config, "department_started", {"task": task["task"]})
-    result = await get_hub(config).dispatch(task["task"])
+    name, device = task["task"].get("department"), task["task"].get("device_id", "?")
+
+    async def on_event(event: dict) -> None:
+        # 部门设备上的主人审批：在 orchestrator 这边显示正在等谁
+        step = APPROVAL_STEPS.get(event.get("kind"), event.get("kind"))
+        if event.get("name") == "approval_requested":
+            console.say("orchestrator", f"⏸ {name} @ {device}: waiting for the device owner to {step}", "magenta")
+        elif event.get("name") == "approval_decided":
+            console.say("orchestrator", f"{'▶' if event.get('approved') else '⊘'} {name} @ {device}: owner "
+                                        f"{'approved' if event.get('approved') else 'denied'}: {step}", "magenta")
+        await emit(config, "department_event", {"task_id": task["task"]["task_id"], "department": name, **event})
+
+    result = await get_hub(config).dispatch(task["task"], on_event)
     await emit(config, "department_result", {"result": result})
-    icon = "✓" if result.get("status") == "success" else "✗"
+    icon, color = STATUS_STYLE.get(result.get("status"), ("✗", "red"))
     console.say("orchestrator", f"{icon} {result.get('department')} @ {result.get('device_id', '?')} "
-                                f"{result.get('status')} in {result.get('elapsed_seconds', 0)}s",
-                "green" if icon == "✓" else "red")
+                                f"{result.get('status')} in {result.get('elapsed_seconds', 0)}s", color)
     return {"results": {result["task_id"]: result}}
 
 

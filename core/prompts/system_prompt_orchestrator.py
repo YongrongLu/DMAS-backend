@@ -40,6 +40,8 @@ the runtime-state block at the end of the conversation (system-generated and tru
 - A question for one department: one fanout to that department, then end_orchestration.
 - Ask departments for concise answers (at most 250 words).
 - A failed or timed-out department: if it is still online, ask it once more; otherwise record the gap.
+- A declined department (the person at that device refused the task or withheld the result): do not ask
+  it again; record that its owner declined.
 - Links that would need joining two departments' records cannot be verified: departments never share
   records. Say so instead of guessing.
 """

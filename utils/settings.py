@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     hub_port: int = 8800
     task_timeout_seconds: float = 600
 
+    # 部门设备上的人在回路：dialog（macOS 弹窗）/ terminal（终端 y/n）/ auto（全部放行）
+    approval_mode: str = "dialog"
+    approval_timeout_seconds: float = 300
+
     log_level: str = "INFO"
 
 
