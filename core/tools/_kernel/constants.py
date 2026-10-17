@@ -16,7 +16,7 @@ Constants provided:
 - WRITE_MAX_BYTES:              max size of one write_file                             default 1 MB
 - BASH_DEFAULT_TIMEOUT:         default seconds per bash command                       default 60
 - BASH_MAX_TIMEOUT:             max seconds per bash command                           default 300
-- BASH_MAX_OUTPUT_CHARS:        max chars of stdout + stderr returned to the model     default 8000
+- BASH_MAX_OUTPUT_CHARS:        max chars of stdout + stderr returned to the model     default 3000
 - SANDBOX_ENABLED:              wrap bash in a macOS Seatbelt profile when available
 - SENSITIVE_HOME_PATHS:         home paths no tool or command may read
 """
@@ -47,7 +47,7 @@ WRITE_MAX_BYTES = 1024 * 1024
 # _bash.py
 BASH_DEFAULT_TIMEOUT = 60
 BASH_MAX_TIMEOUT = 300
-BASH_MAX_OUTPUT_CHARS = 8000
+BASH_MAX_OUTPUT_CHARS = 3000
 # 只在 macOS 上生效（sandbox-exec）；其他系统直接运行，隔离只靠工作目录和环境变量
 SANDBOX_ENABLED = True
 SENSITIVE_HOME_PATHS = (".ssh", "Library/Keychains", ".zsh_history", ".bash_history", ".aws", ".config/gcloud")
