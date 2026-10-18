@@ -2,14 +2,17 @@
 
 Provides:
 - chat_model:       the configured OpenAI-compatible chat model (cached)
-- invoke:           call a model with retries on transient errors and one resend on an empty reply
+- invoke:           call a model with retries on transient errors and one resend on an empty or cut-off reply
 
 Key constraints:
 - one endpoint for all agents (settings.llm_*); the orchestrator and the
   departments differ in prompts and tools, not in model
 - thinking is only sent when set, as chat_template_kwargs, which is how vLLM
-  toggles Nemotron's reasoning; the report writer turns it off because a long
-  reasoning pass can use the whole token budget and leave no report
+  toggles the reasoning of Qwen3 and Nemotron; the report writer turns it off
+  because a long reasoning pass can use the whole token budget and leave no report
+- thinking counts against max_tokens: a reply cut off at the limit
+  (finish_reason "length") has a broken tool call or half a thought, so it
+  is resent like an empty one instead of being used
 """
 
 import asyncio
@@ -66,6 +69,11 @@ def _is_empty(message: AIMessage) -> bool:
     return not message.tool_calls and not str(message.content or "").strip()
 
 
+def _is_cut_off(message: AIMessage) -> bool:
+    """Stopped at max_tokens, usually in the middle of thinking or of a tool call."""
+    return (message.response_metadata or {}).get("finish_reason") == "length"
+
+
 async def invoke(model, messages: list, *, role: str, config=None) -> AIMessage:
     """Call the model with retries.
 
@@ -77,16 +85,18 @@ async def invoke(model, messages: list, *, role: str, config=None) -> AIMessage:
 
     Raises:
         the last transient error after MAX_RETRIES retries, or RuntimeError
-        when the model answers empty twice.
+        when the model answers empty or cut off twice.
     """
     for attempt in range(MAX_RETRIES + 1):
         try:
             response = await model.ainvoke(messages, config=config)
-            if not _is_empty(response):
+            if not _is_empty(response) and not _is_cut_off(response):
                 return response
-            logger.warning("llm_empty_response", role=role, attempt=attempt + 1)
+            problem = "cut off at max_tokens" if _is_cut_off(response) else "empty"
+            logger.warning("llm_bad_response", role=role, problem=problem, attempt=attempt + 1)
             if attempt >= 1:
-                raise RuntimeError(f"model returned an empty response twice (role={role})")
+                raise RuntimeError(f"model response was {problem} twice (role={role}); "
+                                   "raise LLM_MAX_TOKENS or set LLM_ENABLE_THINKING=false")
         except RETRYABLE as exc:
             if attempt == MAX_RETRIES:
                 raise

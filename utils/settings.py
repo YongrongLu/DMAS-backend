@@ -5,9 +5,9 @@ Provides:
 
 Key constraints:
 - every field can be overridden in .env (LLM_BASE_URL, LLM_MODEL, ...)
-- the model endpoint is any OpenAI-compatible server: DeepSeek for now,
-  vLLM serving Nemotron 3.5 Lightning for the final demo; switching is a
-  .env change only
+- the model endpoint is any OpenAI-compatible server (DeepSeek in
+  development, vLLM on Brev serving Qwen3-8B or Nemotron 3.5 Lightning);
+  switching is a .env change only
 """
 
 from pathlib import Path
@@ -30,9 +30,9 @@ class Settings(BaseSettings):
     llm_model: str = "deepseek-flash"
     llm_temperature: float = 0.3
     llm_max_tokens: int = 8192
-    # 只给 vLLM 上的 Nemotron 用：通过 chat_template_kwargs 开关思考；留空就不发送
+    # vLLM 上的 Qwen3 / Nemotron：通过 chat_template_kwargs 开关思考；留空就不发送（两者默认都思考）
     llm_enable_thinking: bool | None = None
-    # 写最终报告时是否思考：Nemotron 思考太长会把 token 用完，报告就是空的
+    # 写最终报告时是否思考：思考太长会把 token 用完，报告就是空的
     llm_report_thinking: bool = False
 
     # 分布式：orchestrator 内嵌的 hub

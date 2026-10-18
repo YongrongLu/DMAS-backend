@@ -26,7 +26,7 @@ class FakeHub:
     def online_departments(self):
         return {d: d for d in self.department_cards()}
 
-    async def dispatch(self, task):
+    async def dispatch(self, task, on_event=None):
         await asyncio.sleep(0)
         return {**task, "status": "success", "summary": "An aggregate finding", "elapsed_seconds": 0}
 

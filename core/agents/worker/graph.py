@@ -38,6 +38,8 @@ import time
 import uuid
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.runnables import RunnableConfig
+from langchain_core.runnables.config import get_async_callback_manager_for_config
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
@@ -135,20 +137,20 @@ def build_department_graph(card: DepartmentCard, policy: AccessPolicy):
         return {"result": {"task_id": task["task_id"], "department": card.name, "status": "declined",
                            "summary": TASK_DECLINED, "egress": "none", "iterations": 0, "tokens": 0}}
 
-    async def agent(state: DepartmentState) -> dict:
+    async def agent(state: DepartmentState, config: RunnableConfig) -> dict:
         tag = f"{card.name} · {state['task']['task_id']}"
         final_turn = state["iteration"] + 1 >= MAX_ITERATIONS
         messages = [SystemMessage(system_prompt), *state["messages"],
                     HumanMessage(render_department_snapshot(state["plan"], state["iteration"], MAX_ITERATIONS))]
         if final_turn:
             messages.append(HumanMessage(FINAL_TURN_PROMPT))
-        response = await invoke(model if final_turn else model_with_tools, messages, role=card.name)
+        response = await invoke(model if final_turn else model_with_tools, messages, role=card.name, config=config)
         for call in response.tool_calls:
             console.say(tag, _describe_call(call), "cyan")
         usage = response.usage_metadata or {}
         return {"messages": [response], "iteration": state["iteration"] + 1, "tokens": usage.get("total_tokens", 0)}
 
-    async def tools_step(state: DepartmentState) -> dict:
+    async def tools_step(state: DepartmentState, config: RunnableConfig) -> dict:
         tag = f"{card.name} · {state['task']['task_id']}"
         # 主人批准过的受限目录只对本次任务开放：每一步按当前授权重新绑定工具
         active = dataclasses.replace(policy, read_roots=(*policy.read_roots, *state.get("grants", [])))
@@ -158,6 +160,12 @@ def build_department_graph(card: DepartmentCard, policy: AccessPolicy):
         # 小模型容易跳过 Skill 直接写代码：本次任务还没加载过任何 Skill 时，bash 先不执行
         skill_loaded = any(isinstance(m, ToolMessage) and m.name == "load_skill" for m in state["messages"])
         for call in state["messages"][-1].tool_calls:
+            direct = call["name"] in PLAN_TOOL_NAMES or call["name"] not in tools_by_name or (call["name"] == "bash" and not skill_loaded)
+            run = None
+            if direct:
+                manager = get_async_callback_manager_for_config(config)
+                run = await manager.on_tool_start({"name": call["name"]}, str(call["args"]),
+                                                  inputs=call["args"], tool_call_id=call["id"])
             if call["name"] == "load_skill":
                 skill_loaded = True
             if call["name"] == "bash" and not skill_loaded:
@@ -166,11 +174,13 @@ def build_department_graph(card: DepartmentCard, policy: AccessPolicy):
                 content = run_plan_tool(call["name"], call["args"], work)
             elif call["name"] in tools_by_name:
                 try:
-                    content = str(await tools_by_name[call["name"]].ainvoke(call["args"]))
+                    content = str(await tools_by_name[call["name"]].ainvoke(call["args"], config=config))
                 except Exception as exc:
                     content = f"Error: {exc.__class__.__name__}: {str(exc)[:300]}"
             else:
                 content = f"Error: unknown tool {call['name']!r}"
+            if run:
+                await run.on_tool_end(content)
             if blocked_on_restricted(call, content, active):
                 blocked.append(_describe_call(call))
             line, color = _describe_result(content)
@@ -242,7 +252,7 @@ def build_department_graph(card: DepartmentCard, policy: AccessPolicy):
     return builder.compile(checkpointer=InMemorySaver())
 
 
-async def run_department_task(graph, card: DepartmentCard, task: dict, ask_owner=None) -> dict:
+async def run_department_task(graph, card: DepartmentCard, task: dict, ask_owner=None, *, callbacks=None) -> dict:
     """Run one dispatched task and return the department's result.
 
     Every pause of the graph goes to ask_owner(request) -> bool; without one,
@@ -252,6 +262,8 @@ async def run_department_task(graph, card: DepartmentCard, task: dict, ask_owner
     t_start = time.time()
     thread_id = f"{task['task_id']}-{uuid.uuid4().hex[:8]}"
     config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 2 * MAX_ITERATIONS + 10}
+    if callbacks:
+        config.update(callbacks=callbacks, metadata={"department": card.name, "task_id": task["task_id"]})
     step = {"task": task, "messages": [HumanMessage(task["question"])], "plan": [], "iteration": 0,
             "tokens": 0, "result": {}, "grants": [], "access": "", "blocked": []}
     try:
