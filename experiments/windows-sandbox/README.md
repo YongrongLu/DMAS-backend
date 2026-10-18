@@ -1,7 +1,7 @@
-# Windows sandbox for xyz-1
+# Windows sandbox on xyz-2
 
-This ports the Docker isolation approach from `codex/cross-platform-compat`
-onto **xyz-1's Bash tool and AccessPolicy**. It does not restore the retired
+The `xyz-2` branch includes the Docker adaptation from `origin/abcxcy` on top
+of **xyz-1's Bash tool and AccessPolicy**. It does not restore the retired
 `shell_executor`, `core/data`, old skill scripts, or old department graph.
 The existing APIs, streaming events, skill-first rule, and task/access/delivery
 approvals remain in place. No model configuration changes are required.
@@ -29,14 +29,29 @@ The machine's default Python may be older; select a suitable installed version.
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 docker build -f experiments/windows-sandbox/Dockerfile -t retail-bash:xyz-1 .
-.\.venv\Scripts\python.exe -m server.main
 ```
 
-Department dashboard example (another terminal):
+The image tag remains `retail-bash:xyz-1` for compatibility with the existing
+configuration and images. It is also the default on `xyz-2`.
+
+For the three-department experiment, keep the coordinator and the Sales/Product
+backends on the Macs. Run **Customer** on Windows so each department has a
+distinct registration. Connect Tailscale to the same network as the coordinator,
+and replace `<orchestrator-tailscale-ip>` below with that Mac's address:
 
 ```powershell
-.\.venv\Scripts\python.exe -m server.department --department product --port 8101
+.\.venv\Scripts\python.exe -m server.department `
+  --department customer `
+  --id pc-customer `
+  --data-dir "$PWD/data/devices/customer" `
+  --hub "ws://<orchestrator-tailscale-ip>:8800" `
+  --port 8101
 ```
+
+Each device reads its own repository-root `.env`. Configure `LLM_BASE_URL`,
+`LLM_MODEL`, and `LLM_API_KEY` for the model service used in the experiment,
+then restart that device's Python backend after changing them. The dashboard
+API listens on `127.0.0.1:8101`; its UI runs locally on the Windows device.
 
 The existing `python -m distributed.agent --department product` command also
 works. CLI owner approvals use the existing terminal fallback on Windows;
@@ -82,3 +97,9 @@ Docker tests are opt-in and fail if requested dependencies are unavailable.
 The Windows symlink inventory test skips only when the OS refuses symlink
 creation; it still runs on Linux/macOS. Simulated macOS tests verify backend
 selection and the existing Seatbelt invocation; they are not a macOS device run.
+
+On a Mac, verify actual Seatbelt execution separately:
+
+```sh
+RUN_SEATBELT_TESTS=1 .venv/bin/python -m pytest tests/test_sandbox_compat.py -q -k real_macos
+```

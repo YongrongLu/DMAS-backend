@@ -139,8 +139,16 @@ async def run_docker(policy, command: str, timeout: float) -> dict:
                 try:
                     async with asyncio.timeout(15):
                         code, _, _ = await _capture([docker, "rm", "--force", options_name])
-                    if code:
-                        raise SandboxError("Docker cleanup failed; container may remain: " + options_name)
+                        if code:
+                            # A failed create may leave no container to remove. Confirm
+                            # absence before deciding cleanup failed, without relying on
+                            # Docker's localized stderr or hiding daemon failures.
+                            code, names, _ = await _capture([
+                                docker, "ps", "--all", "--filter", "name=" + options_name,
+                                "--format", "{{.Names}}",
+                            ])
+                            if code or options_name in names.splitlines():
+                                raise SandboxError("Docker cleanup failed; container may remain: " + options_name)
                 except (OSError, TimeoutError):
                     raise SandboxError("Docker cleanup unavailable; container may remain: " + options_name) from None
             task = asyncio.create_task(cleanup())

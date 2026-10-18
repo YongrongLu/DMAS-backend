@@ -2,11 +2,13 @@
 import asyncio
 import dataclasses
 import json
+import ntpath
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 from langchain_core.messages import AIMessage
@@ -54,6 +56,24 @@ def test_cross_drive_display_does_not_bypass_access_policy(policy, monkeypatch):
     assert runtime.portable_relative_path("D:/data/private", "C:/workspace") == "D:/data/private"
     with pytest.raises(AccessDenied, match="outside this department"):
         policy.check_read(str(Path(policy.read_roots[0]).parent / "private/costs.csv"))
+
+
+def test_windows_alias_and_cross_drive_policy_on_every_host(monkeypatch):
+    # Exercise native Windows path rules even when CI runs on macOS/Linux.
+    monkeypatch.setattr(_access, "os", SimpleNamespace(name="nt", path=ntpath, sep="\\"))
+    monkeypatch.setattr(_access, "record_denial", lambda *args: None)
+    workspace = r"C:\Repo\workspaces\product"
+    shared = r"D:\datasets\product\shared"
+    active = AccessPolicy("product", workspace, (shared,), (r"D:\datasets",))
+    for path in ("data/data.csv", "./data/data.csv", r"DATA\data.csv",
+                 r"c:\repo\WORKSPACES\product\data\data.csv"):
+        assert ntpath.normcase(active.check_read(path)) == ntpath.normcase(shared + r"\data.csv")
+        with pytest.raises(AccessDenied):
+            active.check_write(path)
+    with pytest.raises(AccessDenied):
+        active.check_read(r"data\..\private\costs.csv")
+    with pytest.raises(AccessDenied):
+        active.check_read(r"D:\datasets\sales\shared\data.csv")
 
 
 def test_mounts_only_active_authorization(policy):
@@ -122,6 +142,76 @@ async def test_capture_drains_but_bounds_large_output():
     assert "truncated" in out and "truncated" in err
 
 
+@pytest.mark.asyncio
+async def test_failed_create_keeps_original_error_when_container_is_absent(policy, monkeypatch):
+    monkeypatch.setattr(docker.shutil, "which", lambda _: "/test/docker")
+    calls = []
+
+    async def capture(argv):
+        calls.append(argv)
+        if argv[1] == "image":
+            return 0, "sha256:" + "a" * 64, ""
+        if argv[1] == "create":
+            return 125, "", "DO_NOT_LEAK_DOCKER_DIAGNOSTIC"
+        if argv[1] == "rm":
+            return 1, "", "container does not exist"
+        assert argv[1] == "ps"
+        return 0, "", ""
+
+    monkeypatch.setattr(docker, "_capture", capture)
+    with pytest.raises(docker.SandboxError, match="container creation failed"):
+        await docker.run_docker(policy, "echo test", 5)
+    assert [argv[1] for argv in calls] == ["image", "create", "rm", "ps"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("listing_fails", [False, True])
+async def test_cleanup_failure_is_reported_if_presence_cannot_be_ruled_out(policy, monkeypatch, listing_fails):
+    monkeypatch.setattr(docker.shutil, "which", lambda _: "/test/docker")
+
+    async def capture(argv):
+        if argv[1] == "image":
+            return 0, "sha256:" + "a" * 64, ""
+        if argv[1] in ("create", "rm"):
+            return 1, "", "DO_NOT_LEAK_DOCKER_DIAGNOSTIC"
+        assert argv[1] == "ps"
+        name = argv[argv.index("--filter") + 1].removeprefix("name=")
+        return (1, "", "daemon unavailable") if listing_fails else (0, name + "\n", "")
+
+    monkeypatch.setattr(docker, "_capture", capture)
+    with pytest.raises(docker.SandboxError, match="cleanup failed; container may remain"):
+        await docker.run_docker(policy, "echo test", 5)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_container_cleanup_on_timeout_and_cancellation(policy, monkeypatch, cancel):
+    monkeypatch.setattr(docker.shutil, "which", lambda _: "/test/docker")
+    started = asyncio.Event()
+    removed = []
+
+    async def capture(argv):
+        if argv[1] == "image":
+            return 0, "sha256:" + "a" * 64, ""
+        if argv[1] == "create":
+            return 0, "container-id", ""
+        if argv[1] == "start":
+            started.set()
+            await asyncio.Event().wait()
+        assert argv[1] == "rm"
+        removed.append(argv[-1])
+        return 0, "", ""
+
+    monkeypatch.setattr(docker, "_capture", capture)
+    job = asyncio.create_task(docker.run_docker(policy, "sleep 30", 5 if cancel else .05))
+    await asyncio.wait_for(started.wait(), timeout=1)
+    if cancel:
+        job.cancel()
+    with pytest.raises(asyncio.CancelledError if cancel else TimeoutError):
+        await job
+    assert len(removed) == 1 and removed[0].startswith("retail-bash-")
+
+
 class ScriptedModel(FakeMessagesListChatModel):
     def bind_tools(self, *args, **kwargs):
         return self
@@ -156,6 +246,50 @@ async def test_docker_missing_private_triggers_existing_owner_gate(policy, monke
     assert card.private_dir not in calls[0].read_roots
     assert card.private_dir in calls[1].read_roots
     assert card.private_dir not in policy.read_roots
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform != "darwin" or os.environ.get("RUN_SEATBELT_TESTS") != "1",
+                    reason="Set RUN_SEATBELT_TESTS=1 on macOS for native Seatbelt acceptance")
+async def test_real_macos_seatbelt_analysis_and_isolation(policy, tmp_path, monkeypatch):
+    monkeypatch.setenv("SKILL_SANDBOX_BACKEND", "seatbelt")
+    monkeypatch.setenv("SANDBOX_TEST_HOST_SECRET", "MUST_NOT_ENTER_COMMAND")
+    scratch = tmp_path / "sandbox-tmp"
+    scratch.mkdir()
+    # Keep sandbox-writable temporary files separate from fixture data.
+    monkeypatch.setattr(_bash.tempfile, "gettempdir", lambda: str(scratch))
+    private = str(Path(policy.read_roots[0]).parent / "private/costs.csv")
+    script = f"""import os, socket
+import pandas as pd
+assert 'SANDBOX_TEST_HOST_SECRET' not in os.environ
+assert pd.read_csv('data/data.csv').value.sum() == 50
+try:
+    open({private!r}).read()
+except PermissionError:
+    pass
+else:
+    raise AssertionError('private data was readable')
+try:
+    open('data/data.csv', 'a').write('must-not-write')
+except PermissionError:
+    pass
+else:
+    raise AssertionError('shared data was writable')
+try:
+    with socket.socket() as connection:
+        connection.bind(('127.0.0.1', 0))
+except PermissionError:
+    pass
+else:
+    raise AssertionError('network was available')
+open('report.txt', 'w').write('total=50')
+print('native Seatbelt analysis and isolation passed')
+"""
+    _files.write_file(policy, "analysis.py", script)
+    result = await _bash.bash(policy, "python analysis.py")
+    assert result.startswith("exit code 0"), result
+    assert "native Seatbelt analysis and isolation passed" in result
+    assert "total=50" in _files.view_file(policy, "report.txt")
 
 
 @pytest.fixture
