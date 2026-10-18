@@ -50,10 +50,12 @@ from core.departments import DepartmentCard
 from core.middlewares.egress_guard import apply_egress_guard
 from core.prompts.system_prompt_department import render_department_prompt, render_department_snapshot
 from core.tools._kernel._access import AccessPolicy
+from core.tools._kernel.sandbox.docker_runner import container_path
 from core.tools.bundles.files import build_file_tools
 from core.tools.bundles.plan import PLAN_TOOL_NAMES, PLAN_TOOL_SPECS, run_plan_tool
 from utils import console
 from utils.logging import get_logger
+from utils.runtime import portable_relative_path
 
 logger = get_logger(__name__)
 
@@ -111,7 +113,7 @@ def build_department_graph(card: DepartmentCard, policy: AccessPolicy):
     model_with_tools = model.bind_tools([*tools, *PLAN_TOOL_SPECS])
     system_prompt = render_department_prompt(card, policy)
     restricted = os.path.realpath(card.private_dir) if os.path.isdir(card.private_dir) else ""
-    restricted_rel = os.path.relpath(restricted, policy.workspace) if restricted else ""
+    restricted_rel = portable_relative_path(restricted, policy.workspace) if restricted else ""
 
     def blocked_on_restricted(call: dict, content: str, active: AccessPolicy) -> bool:
         """Whether a tool call was refused because it reached into the restricted folder."""
@@ -119,9 +121,10 @@ def build_department_graph(card: DepartmentCard, policy: AccessPolicy):
             return False
         if call["name"] in PATH_TOOLS and content.startswith("Access denied"):
             return _inside(active.resolve(call["args"].get("path", ".")), restricted)
-        # bash: the Seatbelt profile blocked a read under private/
-        return (call["name"] == "bash" and "Operation not permitted" in content
-                and (restricted in content or restricted_rel in content))
+        # Seatbelt denies the read; Docker leaves unapproved private/ unmounted.
+        return (call["name"] == "bash"
+                and any(error in content for error in ("Operation not permitted", "Permission denied", "No such file or directory"))
+                and any(path in content for path in (restricted, restricted_rel, container_path(restricted))))
 
     def ask(kind: str, task: dict, title: str, text: str) -> bool:
         """Pause the graph until the device owner answers."""

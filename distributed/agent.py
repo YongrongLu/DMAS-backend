@@ -92,8 +92,10 @@ async def _serve(ws: ClientConnection, graph, spec, device_id: str) -> None:
             running.add(job)
             job.add_done_callback(running.discard)
     finally:
-        for job in running:
+        jobs = list(running)
+        for job in jobs:
             job.cancel()
+        await asyncio.gather(*jobs, return_exceptions=True)
 
 
 async def main() -> None:

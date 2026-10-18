@@ -83,7 +83,12 @@ def test_inventory_does_not_follow_symlinks_or_read_contents(runtime, tmp_path):
     outside = tmp_path / "other"
     outside.mkdir()
     (outside / "hidden-secret.txt").write_text("DO NOT READ")
-    (tmp_path / "workspace/escape").symlink_to(outside, target_is_directory=True)
+    try:
+        (tmp_path / "workspace/escape").symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip("Windows symlinks require Developer Mode or administrator privileges")
+        raise
     tree = file_inventory(runtime.card, runtime.policy)
     payload = json.dumps(tree)
     assert "data.csv" in payload and "costs.csv" in payload

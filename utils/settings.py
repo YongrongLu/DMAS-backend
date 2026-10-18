@@ -11,6 +11,7 @@ Key constraints:
 """
 
 from pathlib import Path
+from utils.runtime import default_sandbox_backend
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -34,6 +35,10 @@ class Settings(BaseSettings):
     llm_enable_thinking: bool | None = None
     # 写最终报告时是否思考：思考太长会把 token 用完，报告就是空的
     llm_report_thinking: bool = False
+
+    # Local sandbox configuration; never supplied by model tool arguments.
+    skill_sandbox_backend: str = default_sandbox_backend()
+    skill_sandbox_image: str = "retail-bash:xyz-1"
 
     # 分布式：orchestrator 内嵌的 hub
     hub_host: str = "127.0.0.1"

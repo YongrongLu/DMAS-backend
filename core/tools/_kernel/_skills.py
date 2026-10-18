@@ -94,7 +94,7 @@ def parse_skill(skill_dir: str, project_root: str = PROJECT_ROOT) -> SkillInfo:
 
     scripts_dir = os.path.join(skill_dir, SKILL_SCRIPTS_DIR)
     scripts = tuple(
-        os.path.relpath(os.path.join(scripts_dir, f), project_root)
+        os.path.relpath(os.path.join(scripts_dir, f), project_root).replace(os.sep, "/")
         for f in sorted(os.listdir(scripts_dir)) if f.endswith(".py")
     ) if os.path.isdir(scripts_dir) else ()
     return SkillInfo(name, meta["description"], tuple(departments), body, scripts)

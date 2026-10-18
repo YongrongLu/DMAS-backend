@@ -21,6 +21,7 @@ import os
 import re
 
 from core.tools._kernel._access import AccessDenied, AccessPolicy
+from utils.runtime import portable_relative_path
 from core.tools._kernel.constants import (
     BINARY_SNIFF_BYTES,
     GLOB_MAX_RESULTS,
@@ -44,10 +45,11 @@ def _is_binary(path: str) -> bool:
 def _display(policy: AccessPolicy, real: str) -> str:
     """A path as the agent sees it: relative to the workspace, data/ for the department data."""
     if real.startswith(policy.workspace + os.sep) or real == policy.workspace:
-        return os.path.relpath(real, policy.workspace)
-    for root in policy.read_roots:
+        return portable_relative_path(real, policy.workspace)
+    for index, root in enumerate(policy.read_roots):
         if real.startswith(root + os.sep) or real == root:
-            return os.path.join("data", os.path.relpath(real, root))
+            path = os.path.join("data", os.path.relpath(real, root)) if index == 0 else portable_relative_path(real, policy.workspace)
+            return path.replace(os.sep, "/")
     return real
 
 

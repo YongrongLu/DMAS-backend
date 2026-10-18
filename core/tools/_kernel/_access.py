@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from core.departments import DepartmentCard
 from core.middlewares.audit import record_denial
 from core.tools._kernel.constants import DATA_LINK, PROJECT_ROOT, WORKSPACES_DIR
+from utils.runtime import portable_relative_path
 
 
 class AccessDenied(PermissionError):
@@ -36,6 +37,7 @@ class AccessDenied(PermissionError):
 
 
 def _inside(path: str, root: str) -> bool:
+    path, root = os.path.normcase(path), os.path.normcase(root)
     return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
 
 
@@ -57,6 +59,14 @@ class AccessPolicy:
     def resolve(self, path: str) -> str:
         """Absolute real path of a path given relative to the workspace."""
         expanded = os.path.expanduser(str(path).strip() or ".")
+        # Windows data/ is virtual: no Developer Mode or administrator symlink privilege needed.
+        if os.name == "nt" and self.read_roots:
+            alias = os.path.relpath(expanded, self.workspace) if os.path.isabs(expanded) and _inside(expanded, self.workspace) else expanded
+            portable = alias.replace("\\", "/")
+            while portable.startswith("./"):
+                portable = portable[2:]
+            if portable.lower() == DATA_LINK or portable.lower().startswith(DATA_LINK + "/"):
+                return os.path.realpath(os.path.join(self.read_roots[0], portable[len(DATA_LINK):].lstrip("/")))
         return os.path.realpath(expanded if os.path.isabs(expanded) else os.path.join(self.workspace, expanded))
 
     def check_read(self, path: str) -> str:
@@ -69,7 +79,7 @@ class AccessPolicy:
         if _inside(real, self.workspace) or any(_inside(real, root) for root in self.read_roots):
             return real
         if any(_inside(real, root) for root in self.protected):
-            reason = f"read of {os.path.relpath(real, PROJECT_ROOT)} is outside this department's authorized data"
+            reason = f"read of {portable_relative_path(real, PROJECT_ROOT)} is outside this department's authorized data"
             record_denial(self.owner, "file access", reason, str(path))
             raise AccessDenied(f"Access denied: {reason}.")
         raise AccessDenied(f"{path} is outside your workspace; work inside {self.workspace}")
@@ -99,10 +109,12 @@ def department_policy(card: DepartmentCard) -> AccessPolicy:
     os.makedirs(workspace, exist_ok=True)
     link = os.path.join(workspace, DATA_LINK)
     shared = os.path.realpath(card.shared_dir)
+    if os.name == "nt":
+        return AccessPolicy(owner=card.name, workspace=workspace, read_roots=(shared,), protected=_protected_roots())
     if os.path.islink(link) and os.path.realpath(link) != shared:
         os.unlink(link)
     if not os.path.lexists(link):
-        os.symlink(shared, link)
+        os.symlink(shared, link, target_is_directory=True)
     return AccessPolicy(owner=card.name, workspace=workspace, read_roots=(shared,), protected=_protected_roots())
 
 

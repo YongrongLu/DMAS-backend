@@ -13,10 +13,11 @@ Key constraints:
 """
 
 import os
+import json
 
 
 def _subpaths(paths) -> str:
-    return " ".join(f'(subpath "{p}")' for p in paths)
+    return " ".join(f'(subpath {json.dumps(p, ensure_ascii=False)})' for p in paths)
 
 
 def seatbelt_profile(workspace: str, read_roots, protected, sensitive_home, writable_tmp: str) -> str:
@@ -31,6 +32,6 @@ def seatbelt_profile(workspace: str, read_roots, protected, sensitive_home, writ
 (allow file-read*)
 (deny file-read* {_subpaths(denied)})
 (allow file-read* {_subpaths(allowed)})
-(allow file-write* (subpath "{workspace}") (subpath "{os.path.realpath(writable_tmp)}") (literal "/dev/null"))
+(allow file-write* {_subpaths([workspace, os.path.realpath(writable_tmp)])} (literal "/dev/null"))
 (deny network*)
 """

@@ -48,6 +48,6 @@ WRITE_MAX_BYTES = 1024 * 1024
 BASH_DEFAULT_TIMEOUT = 60
 BASH_MAX_TIMEOUT = 300
 BASH_MAX_OUTPUT_CHARS = 3000
-# 只在 macOS 上生效（sandbox-exec）；其他系统直接运行，隔离只靠工作目录和环境变量
+# macOS keeps Seatbelt; Windows/WSL/Linux use Docker. Missing isolation fails closed.
 SANDBOX_ENABLED = True
 SENSITIVE_HOME_PATHS = (".ssh", "Library/Keychains", ".zsh_history", ".bash_history", ".aws", ".config/gcloud")

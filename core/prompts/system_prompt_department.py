@@ -10,6 +10,7 @@ import os
 from core.departments import DepartmentCard
 from core.tools._kernel._access import AccessPolicy
 from core.tools._kernel._skills import render_skill_index
+from utils.runtime import portable_relative_path
 
 
 DEPARTMENT_PROMPT = """\
@@ -68,7 +69,7 @@ def render_department_prompt(card: DepartmentCard, policy: AccessPolicy) -> str:
     """The system prompt of one department."""
     restricted = ""
     if os.path.isdir(card.private_dir):
-        restricted = RESTRICTED_LINE.format(path=os.path.relpath(card.private_dir, policy.workspace),
+        restricted = RESTRICTED_LINE.format(path=portable_relative_path(card.private_dir, policy.workspace),
                                             holds=card.restricted or "restricted department files")
     return DEPARTMENT_PROMPT.format(
         restricted=restricted,

@@ -15,3 +15,7 @@ The API listens on `http://localhost:8000`, with interactive documentation at
 `http://localhost:8000/docs`. The hub listens on the configured `HUB_HOST:HUB_PORT`.
 See the server guide for the Chat Completions event contract, Tailscale setup,
 and test commands.
+
+Windows/WSL sandbox setup for the `xyz-1` execution flow is documented in
+[`experiments/windows-sandbox/`](experiments/windows-sandbox/README.md).
+macOS keeps Seatbelt by default; Windows/WSL/Linux use Docker.

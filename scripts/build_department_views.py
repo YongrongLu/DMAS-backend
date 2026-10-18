@@ -236,7 +236,7 @@ def write_views(views: dict[str, pd.DataFrame], out_dir: str, manifest_extra: di
         path = os.path.join(shared_dir, f"{department}_data.csv")
         view.to_csv(path, index=False, date_format="%Y-%m-%d %H:%M:%S")
         manifest["views"][department] = {
-            "path": os.path.relpath(path, out_dir),
+            "path": os.path.relpath(path, out_dir).replace(os.sep, "/"),
             "rows": len(view),
             "columns": list(view.columns),
             "sha256": _sha256_of_file(path),
